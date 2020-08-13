@@ -1,10 +1,11 @@
 #include "mplutils.h"
+#include "numpy_cpp.h"
 #include "py_converters.h"
 #include "_backend_agg.h"
 
 typedef struct
 {
-    PyObject_HEAD;
+    PyObject_HEAD
     RendererAgg *x;
     Py_ssize_t shape[3];
     Py_ssize_t strides[3];
@@ -13,7 +14,7 @@ typedef struct
 
 typedef struct
 {
-    PyObject_HEAD;
+    PyObject_HEAD
     BufferRegion *x;
     Py_ssize_t shape[3];
     Py_ssize_t strides[3];
@@ -134,7 +135,7 @@ static PyTypeObject *PyBufferRegion_init_type(PyObject *m, PyTypeObject *type)
     type->tp_name = "matplotlib.backends._backend_agg.BufferRegion";
     type->tp_basicsize = sizeof(PyBufferRegion);
     type->tp_dealloc = (destructor)PyBufferRegion_dealloc;
-    type->tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_NEWBUFFER;
+    type->tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE;
     type->tp_methods = methods;
     type->tp_new = PyBufferRegion_new;
     type->tp_as_buffer = &buffer_procs;
@@ -378,7 +379,7 @@ PyRendererAgg_draw_path_collection(PyRendererAgg *self, PyObject *args, PyObject
                                                 antialiaseds,
                                                 offset_position)));
     }
-    catch (py::exception &e)
+    catch (const py::exception &)
     {
         return NULL;
     }
@@ -390,17 +391,17 @@ static PyObject *PyRendererAgg_draw_quad_mesh(PyRendererAgg *self, PyObject *arg
 {
     GCAgg gc;
     agg::trans_affine master_transform;
-    size_t mesh_width;
-    size_t mesh_height;
+    unsigned int mesh_width;
+    unsigned int mesh_height;
     numpy::array_view<const double, 3> coordinates;
     numpy::array_view<const double, 2> offsets;
     agg::trans_affine offset_trans;
     numpy::array_view<const double, 2> facecolors;
-    int antialiased;
+    bool antialiased;
     numpy::array_view<const double, 2> edgecolors;
 
     if (!PyArg_ParseTuple(args,
-                          "O&O&IIO&O&O&O&iO&:draw_quad_mesh",
+                          "O&O&IIO&O&O&O&O&O&:draw_quad_mesh",
                           &convert_gcagg,
                           &gc,
                           &convert_trans_affine,
@@ -415,6 +416,7 @@ static PyObject *PyRendererAgg_draw_quad_mesh(PyRendererAgg *self, PyObject *arg
                           &offset_trans,
                           &convert_colors,
                           &facecolors,
+                          &convert_bool,
                           &antialiased,
                           &convert_colors,
                           &edgecolors)) {
@@ -459,14 +461,14 @@ PyRendererAgg_draw_gouraud_triangle(PyRendererAgg *self, PyObject *args, PyObjec
 
     if (points.dim(0) != 3 || points.dim(1) != 2) {
         PyErr_Format(PyExc_ValueError,
-                     "points must be a 3x2 array, got %dx%d",
+                     "points must be a 3x2 array, got %" NPY_INTP_FMT "x%" NPY_INTP_FMT,
                      points.dim(0), points.dim(1));
         return NULL;
     }
 
     if (colors.dim(0) != 3 || colors.dim(1) != 4) {
         PyErr_Format(PyExc_ValueError,
-                     "colors must be a 3x4 array, got %dx%d",
+                     "colors must be a 3x4 array, got %" NPY_INTP_FMT "x%" NPY_INTP_FMT,
                      colors.dim(0), colors.dim(1));
         return NULL;
     }
@@ -500,21 +502,21 @@ PyRendererAgg_draw_gouraud_triangles(PyRendererAgg *self, PyObject *args, PyObje
 
     if (points.size() != 0 && (points.dim(1) != 3 || points.dim(2) != 2)) {
         PyErr_Format(PyExc_ValueError,
-                     "points must be a Nx3x2 array, got %dx%dx%d",
+                     "points must be a Nx3x2 array, got %" NPY_INTP_FMT "x%" NPY_INTP_FMT "x%" NPY_INTP_FMT,
                      points.dim(0), points.dim(1), points.dim(2));
         return NULL;
     }
 
     if (colors.size() != 0 && (colors.dim(1) != 3 || colors.dim(2) != 4)) {
         PyErr_Format(PyExc_ValueError,
-                     "colors must be a Nx3x4 array, got %dx%dx%d",
+                     "colors must be a Nx3x4 array, got %" NPY_INTP_FMT "x%" NPY_INTP_FMT "x%" NPY_INTP_FMT,
                      colors.dim(0), colors.dim(1), colors.dim(2));
         return NULL;
     }
 
     if (points.size() != colors.size()) {
         PyErr_Format(PyExc_ValueError,
-                     "points and colors arrays must be the same length, got %d and %d",
+                     "points and colors arrays must be the same length, got %" NPY_INTP_FMT " and %" NPY_INTP_FMT,
                      points.dim(0), colors.dim(0));
         return NULL;
     }
@@ -522,76 +524,6 @@ PyRendererAgg_draw_gouraud_triangles(PyRendererAgg *self, PyObject *args, PyObje
     CALL_CPP("draw_gouraud_triangles", self->x->draw_gouraud_triangles(gc, points, colors, trans));
 
     Py_RETURN_NONE;
-}
-
-static PyObject *PyRendererAgg_tostring_rgb(PyRendererAgg *self, PyObject *args, PyObject *kwds)
-{
-    PyObject *buffobj = NULL;
-
-    buffobj = PyBytes_FromStringAndSize(NULL, self->x->get_width() * self->x->get_height() * 3);
-    if (buffobj == NULL) {
-        return NULL;
-    }
-
-    CALL_CPP_CLEANUP("tostring_rgb",
-                     (self->x->tostring_rgb((uint8_t *)PyBytes_AS_STRING(buffobj))),
-                     Py_DECREF(buffobj));
-
-    return buffobj;
-}
-
-static PyObject *PyRendererAgg_tostring_argb(PyRendererAgg *self, PyObject *args, PyObject *kwds)
-{
-    PyObject *buffobj = NULL;
-
-    buffobj = PyBytes_FromStringAndSize(NULL, self->x->get_width() * self->x->get_height() * 4);
-    if (buffobj == NULL) {
-        return NULL;
-    }
-
-    CALL_CPP_CLEANUP("tostring_argb",
-                     (self->x->tostring_argb((uint8_t *)PyBytes_AS_STRING(buffobj))),
-                     Py_DECREF(buffobj));
-
-    return buffobj;
-}
-
-static PyObject *PyRendererAgg_tostring_bgra(PyRendererAgg *self, PyObject *args, PyObject *kwds)
-{
-    PyObject *buffobj = NULL;
-
-    buffobj = PyBytes_FromStringAndSize(NULL, self->x->get_width() * self->x->get_height() * 4);
-    if (buffobj == NULL) {
-        return NULL;
-    }
-
-    CALL_CPP_CLEANUP("to_string_bgra",
-                     (self->x->tostring_bgra((uint8_t *)PyBytes_AS_STRING(buffobj))),
-                     Py_DECREF(buffobj));
-
-    return buffobj;
-}
-
-static PyObject *
-PyRendererAgg_get_content_extents(PyRendererAgg *self, PyObject *args, PyObject *kwds)
-{
-    agg::rect_i extents;
-
-    CALL_CPP("get_content_extents", (extents = self->x->get_content_extents()));
-
-    return Py_BuildValue(
-        "iiii", extents.x1, extents.y1, extents.x2 - extents.x1, extents.y2 - extents.y1);
-}
-
-static PyObject *PyRendererAgg_buffer_rgba(PyRendererAgg *self, PyObject *args, PyObject *kwds)
-{
-#if PY3K
-    return PyBytes_FromStringAndSize((const char *)self->x->pixBuffer,
-                                     self->x->get_width() * self->x->get_height() * 4);
-#else
-    return PyBuffer_FromReadWriteMemory(self->x->pixBuffer,
-                                        self->x->get_width() * self->x->get_height() * 4);
-#endif
 }
 
 int PyRendererAgg_get_buffer(PyRendererAgg *self, Py_buffer *buf, int flags)
@@ -662,7 +594,7 @@ static PyObject *PyRendererAgg_restore_region(PyRendererAgg *self, PyObject *arg
     }
 
     if (PySequence_Size(args) == 1) {
-        CALL_CPP("restore_region", (self->x->restore_region(*(regobj->x))));
+        CALL_CPP("restore_region", self->x->restore_region(*(regobj->x)));
     } else {
         CALL_CPP("restore_region", self->x->restore_region(*(regobj->x), xx1, yy1, xx2, yy2, x, y));
     }
@@ -684,11 +616,6 @@ static PyTypeObject *PyRendererAgg_init_type(PyObject *m, PyTypeObject *type)
         {"draw_gouraud_triangle", (PyCFunction)PyRendererAgg_draw_gouraud_triangle, METH_VARARGS, NULL},
         {"draw_gouraud_triangles", (PyCFunction)PyRendererAgg_draw_gouraud_triangles, METH_VARARGS, NULL},
 
-        {"tostring_rgb", (PyCFunction)PyRendererAgg_tostring_rgb, METH_NOARGS, NULL},
-        {"tostring_argb", (PyCFunction)PyRendererAgg_tostring_argb, METH_NOARGS, NULL},
-        {"tostring_bgra", (PyCFunction)PyRendererAgg_tostring_bgra, METH_NOARGS, NULL},
-        {"get_content_extents", (PyCFunction)PyRendererAgg_get_content_extents, METH_NOARGS, NULL},
-        {"buffer_rgba", (PyCFunction)PyRendererAgg_buffer_rgba, METH_NOARGS, NULL},
         {"clear", (PyCFunction)PyRendererAgg_clear, METH_NOARGS, NULL},
 
         {"copy_from_bbox", (PyCFunction)PyRendererAgg_copy_from_bbox, METH_VARARGS, NULL},
@@ -704,7 +631,7 @@ static PyTypeObject *PyRendererAgg_init_type(PyObject *m, PyTypeObject *type)
     type->tp_name = "matplotlib.backends._backend_agg.RendererAgg";
     type->tp_basicsize = sizeof(PyRendererAgg);
     type->tp_dealloc = (destructor)PyRendererAgg_dealloc;
-    type->tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_HAVE_NEWBUFFER;
+    type->tp_flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE;
     type->tp_methods = methods;
     type->tp_init = (initproc)PyRendererAgg_init;
     type->tp_new = PyRendererAgg_new;
@@ -721,9 +648,6 @@ static PyTypeObject *PyRendererAgg_init_type(PyObject *m, PyTypeObject *type)
     return type;
 }
 
-extern "C" {
-
-#if PY3K
 static struct PyModuleDef moduledef = {
     PyModuleDef_HEAD_INIT,
     "_backend_agg",
@@ -736,42 +660,29 @@ static struct PyModuleDef moduledef = {
     NULL
 };
 
-#define INITERROR return NULL
+#pragma GCC visibility push(default)
 
 PyMODINIT_FUNC PyInit__backend_agg(void)
-
-#else
-#define INITERROR return
-
-PyMODINIT_FUNC init_backend_agg(void)
-#endif
-
 {
     PyObject *m;
 
-#if PY3K
     m = PyModule_Create(&moduledef);
-#else
-    m = Py_InitModule3("_backend_agg", NULL, NULL);
-#endif
 
     if (m == NULL) {
-        INITERROR;
+        return NULL;
     }
 
     import_array();
 
     if (!PyRendererAgg_init_type(m, &PyRendererAggType)) {
-        INITERROR;
+        return NULL;
     }
 
     if (!PyBufferRegion_init_type(m, &PyBufferRegionType)) {
-        INITERROR;
+        return NULL;
     }
 
-#if PY3K
     return m;
-#endif
 }
 
-} // extern "C"
+#pragma GCC visibility pop

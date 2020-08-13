@@ -1,8 +1,8 @@
 /* -*- mode: c++; c-basic-offset: 4 -*- */
 
-#ifndef _NUMPY_CPP_H_
-#define _NUMPY_CPP_H_
-
+#ifndef MPL_NUMPY_CPP_H
+#define MPL_NUMPY_CPP_H
+#define PY_SSIZE_T_CLEAN
 /***************************************************************************
  * This file is based on original work by Mark Wiebe, available at:
  *
@@ -21,8 +21,10 @@
 #ifdef _POSIX_C_SOURCE
 #    undef _POSIX_C_SOURCE
 #endif
+#ifndef _AIX
 #ifdef _XOPEN_SOURCE
 #    undef _XOPEN_SOURCE
+#endif
 #endif
 
 // Prevent multiple conflicting definitions of swab from stdlib.h and unistd.h
@@ -398,6 +400,15 @@ class array_view : public detail::array_view_accessors<array_view, T, ND>
         m_strides = strides;
     }
 
+    array_view(PyArrayObject *arr)
+    {
+        m_arr = arr;
+        Py_XINCREF(arr);
+        m_shape = PyArray_DIMS(m_arr);
+        m_strides = PyArray_STRIDES(m_arr);
+        m_data = PyArray_BYTES(m_arr);
+    }
+
     array_view(npy_intp shape[ND]) : m_arr(NULL), m_shape(NULL), m_strides(NULL), m_data(NULL)
     {
         PyObject *arr = PyArray_SimpleNew(ND, shape, type_num_of<T>::value);
@@ -430,7 +441,7 @@ class array_view : public detail::array_view_accessors<array_view, T, ND>
         return *this;
     }
 
-    int set(PyObject *arr, bool contiguous = false)
+    bool set(PyObject *arr, bool contiguous = false)
     {
         PyArrayObject *tmp;
 
@@ -447,7 +458,7 @@ class array_view : public detail::array_view_accessors<array_view, T, ND>
                 tmp = (PyArrayObject *)PyArray_FromObject(arr, type_num_of<T>::value, 0, ND);
             }
             if (tmp == NULL) {
-                return 0;
+                return false;
             }
 
             if (PyArray_NDIM(tmp) == 0 || PyArray_DIM(tmp, 0) == 0) {
@@ -456,18 +467,18 @@ class array_view : public detail::array_view_accessors<array_view, T, ND>
                 m_data = NULL;
                 m_shape = zeros;
                 m_strides = zeros;
-		if (PyArray_NDIM(tmp) == 0 && ND == 0) {
-		    m_arr = tmp;
-		    return 1;
-		}
+                if (PyArray_NDIM(tmp) == 0 && ND == 0) {
+                    m_arr = tmp;
+                    return true;
+                }
             }
-	    if (PyArray_NDIM(tmp) != ND) {
-		PyErr_Format(PyExc_ValueError,
-			     "Expected %d-dimensional array, got %d",
-			     ND,
-			     PyArray_NDIM(tmp));
-		Py_DECREF(tmp);
-		return 0;
+            if (PyArray_NDIM(tmp) != ND) {
+                PyErr_Format(PyExc_ValueError,
+                             "Expected %d-dimensional array, got %d",
+                             ND,
+                             PyArray_NDIM(tmp));
+                Py_DECREF(tmp);
+                return false;
             }
 
             /* Copy some of the data to the view object for faster access */
@@ -475,10 +486,10 @@ class array_view : public detail::array_view_accessors<array_view, T, ND>
             m_arr = tmp;
             m_shape = PyArray_DIMS(m_arr);
             m_strides = PyArray_STRIDES(m_arr);
-            m_data = (char *)PyArray_BYTES(tmp);
+            m_data = PyArray_BYTES(tmp);
         }
 
-        return 1;
+        return true;
     }
 
     npy_intp dim(size_t i) const
@@ -525,9 +536,16 @@ class array_view : public detail::array_view_accessors<array_view, T, ND>
         return (T *)m_data;
     }
 
+    // Return a new reference.
     PyObject *pyobj()
     {
         Py_XINCREF(m_arr);
+        return (PyObject *)m_arr;
+    }
+
+    // Steal a reference.
+    PyObject *pyobj_steal()
+    {
         return (PyObject *)m_arr;
     }
 

@@ -1,36 +1,23 @@
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-
-import six
-
 import io
-import os
-
-from distutils.version import LooseVersion as V
 
 import numpy as np
 from numpy.testing import assert_array_almost_equal
+from PIL import Image, TiffTags
+import pytest
 
-from nose.tools import assert_raises
 
+from matplotlib import (
+    collections, path, pyplot as plt, transforms as mtransforms, rcParams)
 from matplotlib.image import imread
-from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 from matplotlib.figure import Figure
-from matplotlib.testing.decorators import (
-    cleanup, image_comparison, knownfailureif)
-from matplotlib import pyplot as plt
-from matplotlib import collections
-from matplotlib import path
-from matplotlib import transforms as mtransforms
+from matplotlib.testing.decorators import image_comparison
 
 
-@cleanup
 def test_repeated_save_with_alpha():
     # We want an image which has a background color of bluish green, with an
     # alpha of 0.25.
 
     fig = Figure([1, 0.4])
-    canvas = FigureCanvas(fig)
     fig.set_facecolor((0, 1, 0.4))
     fig.patch.set_alpha(0.25)
 
@@ -57,7 +44,6 @@ def test_repeated_save_with_alpha():
                               decimal=3)
 
 
-@cleanup
 def test_large_single_path_collection():
     buff = io.BytesIO()
 
@@ -72,72 +58,6 @@ def test_large_single_path_collection():
     plt.savefig(buff)
 
 
-def report_memory(i):
-    pid = os.getpid()
-    a2 = os.popen('ps -p %d -o rss,sz' % pid).readlines()
-    print(i, '  ', a2[1], end=' ')
-    return int(a2[1].split()[0])
-
-# This test is disabled -- it uses old API. -ADS 2009-09-07
-## def test_memleak():
-##     """Test agg backend for memory leaks."""
-##     from matplotlib.ft2font import FT2Font
-##     from numpy.random import rand
-##     from matplotlib.backend_bases import GraphicsContextBase
-##     from matplotlib.backends._backend_agg import RendererAgg
-
-##     fontname = '/usr/local/share/matplotlib/Vera.ttf'
-
-##     N = 200
-##     for i in range( N ):
-##         gc = GraphicsContextBase()
-##         gc.set_clip_rectangle( [20, 20, 20, 20] )
-##         o = RendererAgg( 400, 400, 72 )
-
-##         for j in range( 50 ):
-##             xs = [ 400*int(rand()) for k in range(8) ]
-##             ys = [ 400*int(rand()) for k in range(8) ]
-##             rgb = (1, 0, 0)
-##             pnts = zip( xs, ys )
-##             o.draw_polygon( gc, rgb, pnts )
-##             o.draw_polygon( gc, None, pnts )
-
-##         for j in range( 50 ):
-##             x = [ 400*int(rand()) for k in range(4) ]
-##             y = [ 400*int(rand()) for k in range(4) ]
-##             o.draw_lines( gc, x, y )
-
-##         for j in range( 50 ):
-##             args = [ 400*int(rand()) for k in range(4) ]
-##             rgb = (1, 0, 0)
-##             o.draw_rectangle( gc, rgb, *args )
-
-##         if 1: # add text
-##             font = FT2Font( fontname )
-##             font.clear()
-##             font.set_text( 'hi mom', 60 )
-##             font.set_size( 12, 72 )
-##             o.draw_text_image( font.get_image(), 30, 40, gc )
-
-##         fname = "agg_memleak_%05d.png"
-##         o.write_png( fname % i )
-##         val = report_memory( i )
-##         if i==1: start = val
-
-##     end = val
-##     avgMem = (end - start) / float(N)
-##     print 'Average memory consumed per loop: %1.4f\n' % (avgMem)
-
-##     #TODO: Verify the expected mem usage and approximate tolerance that
-##     # should be used
-##     #self.checkClose( 0.32, avgMem, absTol = 0.1 )
-
-##     # w/o text and w/o write_png: Average memory consumed per loop: 0.02
-##     # w/o text and w/ write_png : Average memory consumed per loop: 0.3400
-##     # w/ text and w/ write_png  : Average memory consumed per loop: 0.32
-
-
-@cleanup
 def test_marker_with_nan():
     # This creates a marker with nans in it, which was segfaulting the
     # Agg backend (see #3722)
@@ -150,7 +70,6 @@ def test_marker_with_nan():
     fig.savefig(buf, format='png')
 
 
-@cleanup
 def test_long_path():
     buff = io.BytesIO()
 
@@ -161,83 +80,72 @@ def test_long_path():
     fig.savefig(buff, format='png')
 
 
-@image_comparison(baseline_images=['agg_filter'],
-                  extensions=['png'], remove_text=True)
+@image_comparison(['agg_filter.png'], remove_text=True)
 def test_agg_filter():
     def smooth1d(x, window_len):
-        s = np.r_[2*x[0] - x[window_len:1:-1],
-                  x,
-                  2*x[-1] - x[-1:-window_len:-1]]
+        # copied from http://www.scipy.org/Cookbook/SignalSmooth
+        s = np.r_[
+            2*x[0] - x[window_len:1:-1], x, 2*x[-1] - x[-1:-window_len:-1]]
         w = np.hanning(window_len)
         y = np.convolve(w/w.sum(), s, mode='same')
         return y[window_len-1:-window_len+1]
 
     def smooth2d(A, sigma=3):
-        window_len = max(int(sigma), 3)*2 + 1
-        A1 = np.array([smooth1d(x, window_len) for x in np.asarray(A)])
-        A2 = np.transpose(A1)
-        A3 = np.array([smooth1d(x, window_len) for x in A2])
-        A4 = np.transpose(A3)
+        window_len = max(int(sigma), 3) * 2 + 1
+        A = np.apply_along_axis(smooth1d, 0, A, window_len)
+        A = np.apply_along_axis(smooth1d, 1, A, window_len)
+        return A
 
-        return A4
-
-    class BaseFilter(object):
-        def prepare_image(self, src_image, dpi, pad):
-            ny, nx, depth = src_image.shape
-            padded_src = np.zeros([pad*2 + ny, pad*2 + nx, depth], dtype="d")
-            padded_src[pad:-pad, pad:-pad, :] = src_image[:, :, :]
-
-            return padded_src  # , tgt_image
+    class BaseFilter:
 
         def get_pad(self, dpi):
             return 0
 
+        def process_image(self, padded_src, dpi):
+            raise NotImplementedError("Should be overridden by subclasses")
+
         def __call__(self, im, dpi):
             pad = self.get_pad(dpi)
-            padded_src = self.prepare_image(im, dpi, pad)
+            padded_src = np.pad(im, [(pad, pad), (pad, pad), (0, 0)],
+                                "constant")
             tgt_image = self.process_image(padded_src, dpi)
             return tgt_image, -pad, -pad
 
     class OffsetFilter(BaseFilter):
-        def __init__(self, offsets=None):
-            if offsets is None:
-                self.offsets = (0, 0)
-            else:
-                self.offsets = offsets
+
+        def __init__(self, offsets=(0, 0)):
+            self.offsets = offsets
 
         def get_pad(self, dpi):
-            return int(max(*self.offsets)/72.*dpi)
+            return int(max(self.offsets) / 72 * dpi)
 
         def process_image(self, padded_src, dpi):
             ox, oy = self.offsets
-            a1 = np.roll(padded_src, int(ox/72.*dpi), axis=1)
-            a2 = np.roll(a1, -int(oy/72.*dpi), axis=0)
+            a1 = np.roll(padded_src, int(ox / 72 * dpi), axis=1)
+            a2 = np.roll(a1, -int(oy / 72 * dpi), axis=0)
             return a2
 
     class GaussianFilter(BaseFilter):
-        "simple gauss filter"
+        """Simple Gaussian filter."""
 
-        def __init__(self, sigma, alpha=0.5, color=None):
+        def __init__(self, sigma, alpha=0.5, color=(0, 0, 0)):
             self.sigma = sigma
             self.alpha = alpha
-            if color is None:
-                self.color = (0, 0, 0)
-            else:
-                self.color = color
+            self.color = color
 
         def get_pad(self, dpi):
-            return int(self.sigma*3/72.*dpi)
+            return int(self.sigma*3 / 72 * dpi)
 
         def process_image(self, padded_src, dpi):
-            tgt_image = np.zeros_like(padded_src)
-            aa = smooth2d(padded_src[:, :, -1]*self.alpha,
-                          self.sigma/72.*dpi)
-            tgt_image[:, :, -1] = aa
-            tgt_image[:, :, :-1] = self.color
+            tgt_image = np.empty_like(padded_src)
+            tgt_image[:, :, :3] = self.color
+            tgt_image[:, :, 3] = smooth2d(padded_src[:, :, 3] * self.alpha,
+                                          self.sigma / 72 * dpi)
             return tgt_image
 
     class DropShadowFilter(BaseFilter):
-        def __init__(self, sigma, alpha=0.3, color=None, offsets=None):
+
+        def __init__(self, sigma, alpha=0.3, color=(0, 0, 0), offsets=(0, 0)):
             self.gauss_filter = GaussianFilter(sigma, alpha, color)
             self.offset_filter = OffsetFilter(offsets)
 
@@ -250,11 +158,7 @@ def test_agg_filter():
             t2 = self.offset_filter.process_image(t1, dpi)
             return t2
 
-    if V(np.__version__) < V('1.7.0'):
-        return
-
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
 
     # draw lines
     l1, = ax.plot([0.1, 0.5, 0.9], [0.1, 0.9, 0.5], "bo-",
@@ -267,7 +171,6 @@ def test_agg_filter():
     for l in [l1, l2]:
 
         # draw shadows with same lines with slight offset.
-
         xx = l.get_xdata()
         yy = l.get_ydata()
         shadow, = ax.plot(xx, yy)
@@ -292,13 +195,52 @@ def test_agg_filter():
     ax.yaxis.set_visible(False)
 
 
-@cleanup
 def test_too_large_image():
     fig = plt.figure(figsize=(300, 1000))
     buff = io.BytesIO()
-    assert_raises(ValueError, fig.savefig, buff)
+    with pytest.raises(ValueError):
+        fig.savefig(buff)
 
 
-if __name__ == "__main__":
-    import nose
-    nose.runmodule(argv=['-s', '--with-doctest'], exit=False)
+def test_chunksize():
+    x = range(200)
+
+    # Test without chunksize
+    fig, ax = plt.subplots()
+    ax.plot(x, np.sin(x))
+    fig.canvas.draw()
+
+    # Test with chunksize
+    fig, ax = plt.subplots()
+    rcParams['agg.path.chunksize'] = 105
+    ax.plot(x, np.sin(x))
+    fig.canvas.draw()
+
+
+@pytest.mark.backend('Agg')
+def test_jpeg_dpi():
+    # Check that dpi is set correctly in jpg files.
+    plt.plot([0, 1, 2], [0, 1, 0])
+    buf = io.BytesIO()
+    plt.savefig(buf, format="jpg", dpi=200)
+    im = Image.open(buf)
+    assert im.info['dpi'] == (200, 200)
+
+
+def test_pil_kwargs_png():
+    from PIL.PngImagePlugin import PngInfo
+    buf = io.BytesIO()
+    pnginfo = PngInfo()
+    pnginfo.add_text("Software", "test")
+    plt.figure().savefig(buf, format="png", pil_kwargs={"pnginfo": pnginfo})
+    im = Image.open(buf)
+    assert im.info["Software"] == "test"
+
+
+def test_pil_kwargs_tiff():
+    buf = io.BytesIO()
+    pil_kwargs = {"description": "test image"}
+    plt.figure().savefig(buf, format="tiff", pil_kwargs=pil_kwargs)
+    im = Image.open(buf)
+    tags = {TiffTags.TAGS_V2[k].name: v for k, v in im.tag_v2.items()}
+    assert tags["ImageDescription"] == "test image"

@@ -1,18 +1,24 @@
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-
-import six
+import copy
+import re
 
 import numpy as np
 
 from numpy.testing import assert_array_equal
+import pytest
 
+from matplotlib import patches
 from matplotlib.path import Path
 from matplotlib.patches import Polygon
-from nose.tools import assert_raises, assert_equal
 from matplotlib.testing.decorators import image_comparison
 import matplotlib.pyplot as plt
 from matplotlib import transforms
+from matplotlib.backend_bases import MouseEvent
+
+
+def test_empty_closed_path():
+    path = Path(np.zeros((0, 2)), closed=True)
+    assert path.vertices.shape == (0, 2)
+    assert path.codes is None
 
 
 def test_readonly_path():
@@ -21,7 +27,27 @@ def test_readonly_path():
     def modify_vertices():
         path.vertices = path.vertices * 2.0
 
-    assert_raises(AttributeError, modify_vertices)
+    with pytest.raises(AttributeError):
+        modify_vertices()
+
+
+def test_path_exceptions():
+    bad_verts1 = np.arange(12).reshape(4, 3)
+    with pytest.raises(ValueError,
+                       match=re.escape(f'has shape {bad_verts1.shape}')):
+        Path(bad_verts1)
+
+    bad_verts2 = np.arange(12).reshape(2, 3, 2)
+    with pytest.raises(ValueError,
+                       match=re.escape(f'has shape {bad_verts2.shape}')):
+        Path(bad_verts2)
+
+    good_verts = np.arange(12).reshape(6, 2)
+    bad_codes = np.arange(2)
+    msg = re.escape(f"Your vertices have shape {good_verts.shape} "
+                    f"but your codes have shape {bad_codes.shape}")
+    with pytest.raises(ValueError, match=msg):
+        Path(good_verts, bad_codes)
 
 
 def test_point_in_path():
@@ -32,21 +58,109 @@ def test_point_in_path():
     points = [(0.5, 0.5), (1.5, 0.5)]
     ret = path.contains_points(points)
     assert ret.dtype == 'bool'
-    assert np.all(ret == [True, False])
+    np.testing.assert_equal(ret, [True, False])
 
 
 def test_contains_points_negative_radius():
     path = Path.unit_circle()
 
     points = [(0.0, 0.0), (1.25, 0.0), (0.9, 0.9)]
-    expected = [True, False, False]
     result = path.contains_points(points, radius=-0.5)
+    np.testing.assert_equal(result, [True, False, False])
 
-    assert np.all(result == expected)
+
+_test_paths = [
+    # interior extrema determine extents and degenerate derivative
+    Path([[0, 0], [1, 0], [1, 1], [0, 1]],
+           [Path.MOVETO, Path.CURVE4, Path.CURVE4, Path.CURVE4]),
+    # a quadratic curve
+    Path([[0, 0], [0, 1], [1, 0]], [Path.MOVETO, Path.CURVE3, Path.CURVE3]),
+    # a linear curve, degenerate vertically
+    Path([[0, 1], [1, 1]], [Path.MOVETO, Path.LINETO]),
+    # a point
+    Path([[1, 2]], [Path.MOVETO]),
+]
 
 
-@image_comparison(baseline_images=['path_clipping'],
-                  extensions=['svg'], remove_text=True)
+_test_path_extents = [(0., 0., 0.75, 1.), (0., 0., 1., 0.5), (0., 1., 1., 1.),
+                      (1., 2., 1., 2.)]
+
+
+@pytest.mark.parametrize('path, extents', zip(_test_paths, _test_path_extents))
+def test_exact_extents(path, extents):
+    # notice that if we just looked at the control points to get the bounding
+    # box of each curve, we would get the wrong answers. For example, for
+    # hard_curve = Path([[0, 0], [1, 0], [1, 1], [0, 1]],
+    #                   [Path.MOVETO, Path.CURVE4, Path.CURVE4, Path.CURVE4])
+    # we would get that the extents area (0, 0, 1, 1). This code takes into
+    # account the curved part of the path, which does not typically extend all
+    # the way out to the control points.
+    # Note that counterintuitively, path.get_extents() returns a Bbox, so we
+    # have to get that Bbox's `.extents`.
+    assert np.all(path.get_extents().extents == extents)
+
+
+def test_point_in_path_nan():
+    box = np.array([[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]])
+    p = Path(box)
+    test = np.array([[np.nan, 0.5]])
+    contains = p.contains_points(test)
+    assert len(contains) == 1
+    assert not contains[0]
+
+
+def test_nonlinear_containment():
+    fig, ax = plt.subplots()
+    ax.set(xscale="log", ylim=(0, 1))
+    polygon = ax.axvspan(1, 10)
+    assert polygon.get_path().contains_point(
+        ax.transData.transform((5, .5)), ax.transData)
+    assert not polygon.get_path().contains_point(
+        ax.transData.transform((.5, .5)), ax.transData)
+    assert not polygon.get_path().contains_point(
+        ax.transData.transform((50, .5)), ax.transData)
+
+
+@image_comparison(['arrow_contains_point.png'],
+                  remove_text=True, style='mpl20')
+def test_arrow_contains_point():
+    # fix bug (#8384)
+    fig, ax = plt.subplots()
+    ax.set_xlim((0, 2))
+    ax.set_ylim((0, 2))
+
+    # create an arrow with Curve style
+    arrow = patches.FancyArrowPatch((0.5, 0.25), (1.5, 0.75),
+                                    arrowstyle='->',
+                                    mutation_scale=40)
+    ax.add_patch(arrow)
+    # create an arrow with Bracket style
+    arrow1 = patches.FancyArrowPatch((0.5, 1), (1.5, 1.25),
+                                     arrowstyle=']-[',
+                                     mutation_scale=40)
+    ax.add_patch(arrow1)
+    # create an arrow with other arrow style
+    arrow2 = patches.FancyArrowPatch((0.5, 1.5), (1.5, 1.75),
+                                     arrowstyle='fancy',
+                                     fill=False,
+                                     mutation_scale=40)
+    ax.add_patch(arrow2)
+    patches_list = [arrow, arrow1, arrow2]
+
+    # generate some points
+    X, Y = np.meshgrid(np.arange(0, 2, 0.1),
+                       np.arange(0, 2, 0.1))
+    for k, (x, y) in enumerate(zip(X.ravel(), Y.ravel())):
+        xdisp, ydisp = ax.transData.transform([x, y])
+        event = MouseEvent('button_press_event', fig.canvas, xdisp, ydisp)
+        for m, patch in enumerate(patches_list):
+            # set the points to red only if the arrow contains the point
+            inside, res = patch.contains(event)
+            if inside:
+                ax.scatter(x, y, s=5, c="r")
+
+
+@image_comparison(['path_clipping.svg'], remove_text=True)
 def test_path_clipping():
     fig = plt.figure(figsize=(6.0, 6.2))
 
@@ -66,22 +180,14 @@ def test_path_clipping():
             xy, facecolor='none', edgecolor='red', closed=True))
 
 
-def test_point_in_path_nan():
-    box = np.array([[0, 0], [1, 0], [1, 1], [0, 1], [0, 0]])
-    p = Path(box)
-    test = np.array([[np.nan, 0.5]])
-    contains = p.contains_points(test)
-    assert len(contains) == 1
-    assert not contains[0]
-
-
-@image_comparison(baseline_images=['semi_log_with_zero'], extensions=['png'])
+@image_comparison(['semi_log_with_zero.png'], style='mpl20')
 def test_log_transform_with_zero():
     x = np.arange(-10, 10)
     y = (1.0 - 1.0/(x**2+1))**20
 
     fig, ax = plt.subplots()
-    ax.semilogy(x, y, "-o", lw=15)
+    ax.semilogy(x, y, "-o", lw=15, markeredgecolor='k')
+    ax.set_ylim(1e-7, 1)
     ax.grid(True)
 
 
@@ -89,14 +195,23 @@ def test_make_compound_path_empty():
     # We should be able to make a compound path with no arguments.
     # This makes it easier to write generic path based code.
     r = Path.make_compound_path()
-    assert_equal(r.vertices.shape, (0, 2))
+    assert r.vertices.shape == (0, 2)
 
 
-@image_comparison(baseline_images=['xkcd'], remove_text=True)
+def test_make_compound_path_stops():
+    zero = [0, 0]
+    paths = 3*[Path([zero, zero], [Path.MOVETO, Path.STOP])]
+    compound_path = Path.make_compound_path(*paths)
+    # the choice to not preserve the terminal STOP is arbitrary, but
+    # documented, so we test that it is in fact respected here
+    assert np.sum(compound_path.codes == Path.STOP) == 0
+
+
+@image_comparison(['xkcd.png'], remove_text=True)
 def test_xkcd():
     np.random.seed(0)
 
-    x = np.linspace(0, 2.0 * np.pi, 100.0)
+    x = np.linspace(0, 2 * np.pi, 100)
     y = np.sin(x)
 
     with plt.xkcd():
@@ -104,8 +219,23 @@ def test_xkcd():
         ax.plot(x, y)
 
 
-@image_comparison(baseline_images=['marker_paths'], extensions=['pdf'],
-                  remove_text=True)
+@image_comparison(['xkcd_marker.png'], remove_text=True)
+def test_xkcd_marker():
+    np.random.seed(0)
+
+    x = np.linspace(0, 5, 8)
+    y1 = x
+    y2 = 5 - x
+    y3 = 2.5 * np.ones(8)
+
+    with plt.xkcd():
+        fig, ax = plt.subplots()
+        ax.plot(x, y1, '+', ms=10)
+        ax.plot(x, y2, 'o', ms=10)
+        ax.plot(x, y3, '^', ms=10)
+
+
+@image_comparison(['marker_paths.pdf'], remove_text=True)
 def test_marker_paths_pdf():
     N = 7
 
@@ -114,6 +244,19 @@ def test_marker_paths_pdf():
                  np.ones(N))
     plt.xlim(-1, N)
     plt.ylim(-1, 7)
+
+
+@image_comparison(['nan_path'], style='default', remove_text=True,
+                  extensions=['pdf', 'svg', 'eps', 'png'])
+def test_nan_isolated_points():
+
+    y0 = [0, np.nan, 2, np.nan, 4, 5, 6]
+    y1 = [np.nan, 7, np.nan, 9, 10, np.nan, 12]
+
+    fig, ax = plt.subplots()
+
+    ax.plot(y0, '-o')
+    ax.plot(y1, '-o')
 
 
 def test_path_no_doubled_point_in_to_polygon():
@@ -172,6 +315,163 @@ def test_path_to_polygons():
     assert_array_equal(p.to_polygons(closed_only=False), [data])
 
 
-if __name__ == '__main__':
-    import nose
-    nose.runmodule(argv=['-s', '--with-doctest'], exit=False)
+def test_path_deepcopy():
+    # Should not raise any error
+    verts = [[0, 0], [1, 1]]
+    codes = [Path.MOVETO, Path.LINETO]
+    path1 = Path(verts)
+    path2 = Path(verts, codes)
+    copy.deepcopy(path1)
+    copy.deepcopy(path2)
+
+
+@pytest.mark.parametrize('phi', np.concatenate([
+    np.array([0, 15, 30, 45, 60, 75, 90, 105, 120, 135]) + delta
+    for delta in [-1, 0, 1]]))
+def test_path_intersect_path(phi):
+    # test for the range of intersection angles
+    eps_array = [1e-5, 1e-8, 1e-10, 1e-12]
+
+    transform = transforms.Affine2D().rotate(np.deg2rad(phi))
+
+    # a and b intersect at angle phi
+    a = Path([(-2, 0), (2, 0)])
+    b = transform.transform_path(a)
+    assert a.intersects_path(b) and b.intersects_path(a)
+
+    # a and b touch at angle phi at (0, 0)
+    a = Path([(0, 0), (2, 0)])
+    b = transform.transform_path(a)
+    assert a.intersects_path(b) and b.intersects_path(a)
+
+    # a and b are orthogonal and intersect at (0, 3)
+    a = transform.transform_path(Path([(0, 1), (0, 3)]))
+    b = transform.transform_path(Path([(1, 3), (0, 3)]))
+    assert a.intersects_path(b) and b.intersects_path(a)
+
+    # a and b are collinear and intersect at (0, 3)
+    a = transform.transform_path(Path([(0, 1), (0, 3)]))
+    b = transform.transform_path(Path([(0, 5), (0, 3)]))
+    assert a.intersects_path(b) and b.intersects_path(a)
+
+    # self-intersect
+    assert a.intersects_path(a)
+
+    # a contains b
+    a = transform.transform_path(Path([(0, 0), (5, 5)]))
+    b = transform.transform_path(Path([(1, 1), (3, 3)]))
+    assert a.intersects_path(b) and b.intersects_path(a)
+
+    # a and b are collinear but do not intersect
+    a = transform.transform_path(Path([(0, 1), (0, 5)]))
+    b = transform.transform_path(Path([(3, 0), (3, 3)]))
+    assert not a.intersects_path(b) and not b.intersects_path(a)
+
+    # a and b are on the same line but do not intersect
+    a = transform.transform_path(Path([(0, 1), (0, 5)]))
+    b = transform.transform_path(Path([(0, 6), (0, 7)]))
+    assert not a.intersects_path(b) and not b.intersects_path(a)
+
+    # Note: 1e-13 is the absolute tolerance error used for
+    # `isclose` function from src/_path.h
+
+    # a and b are parallel but do not touch
+    for eps in eps_array:
+        a = transform.transform_path(Path([(0, 1), (0, 5)]))
+        b = transform.transform_path(Path([(0 + eps, 1), (0 + eps, 5)]))
+        assert not a.intersects_path(b) and not b.intersects_path(a)
+
+    # a and b are on the same line but do not intersect (really close)
+    for eps in eps_array:
+        a = transform.transform_path(Path([(0, 1), (0, 5)]))
+        b = transform.transform_path(Path([(0, 5 + eps), (0, 7)]))
+        assert not a.intersects_path(b) and not b.intersects_path(a)
+
+    # a and b are on the same line and intersect (really close)
+    for eps in eps_array:
+        a = transform.transform_path(Path([(0, 1), (0, 5)]))
+        b = transform.transform_path(Path([(0, 5 - eps), (0, 7)]))
+        assert a.intersects_path(b) and b.intersects_path(a)
+
+    # b is the same as a but with an extra point
+    a = transform.transform_path(Path([(0, 1), (0, 5)]))
+    b = transform.transform_path(Path([(0, 1), (0, 2), (0, 5)]))
+    assert a.intersects_path(b) and b.intersects_path(a)
+
+
+@pytest.mark.parametrize('offset', range(-720, 361, 45))
+def test_full_arc(offset):
+    low = offset
+    high = 360 + offset
+
+    path = Path.arc(low, high)
+    mins = np.min(path.vertices, axis=0)
+    maxs = np.max(path.vertices, axis=0)
+    np.testing.assert_allclose(mins, -1)
+    np.testing.assert_allclose(maxs, 1)
+
+
+def test_disjoint_zero_length_segment():
+    this_path = Path(
+        np.array([
+            [824.85064295, 2056.26489203],
+            [861.69033931, 2041.00539016],
+            [868.57864109, 2057.63522175],
+            [831.73894473, 2072.89472361],
+            [824.85064295, 2056.26489203]]),
+        np.array([1, 2, 2, 2, 79], dtype=Path.code_type))
+
+    outline_path = Path(
+        np.array([
+            [859.91051028, 2165.38461538],
+            [859.06772495, 2149.30331334],
+            [859.06772495, 2181.46591743],
+            [859.91051028, 2165.38461538],
+            [859.91051028, 2165.38461538]]),
+        np.array([1, 2, 2, 2, 2],
+                 dtype=Path.code_type))
+
+    assert not outline_path.intersects_path(this_path)
+    assert not this_path.intersects_path(outline_path)
+
+
+def test_intersect_zero_length_segment():
+    this_path = Path(
+        np.array([
+            [0, 0],
+            [1, 1],
+        ]))
+
+    outline_path = Path(
+        np.array([
+            [1, 0],
+            [.5, .5],
+            [.5, .5],
+            [0, 1],
+        ]))
+
+    assert outline_path.intersects_path(this_path)
+    assert this_path.intersects_path(outline_path)
+
+
+def test_cleanup_closepoly():
+    # if the first connected component of a Path ends in a CLOSEPOLY, but that
+    # component contains a NaN, then Path.cleaned should ignore not just the
+    # control points but also the CLOSEPOLY, since it has nowhere valid to
+    # point.
+    paths = [
+        Path([[np.nan, np.nan], [np.nan, np.nan]],
+             [Path.MOVETO, Path.CLOSEPOLY]),
+        # we trigger a different path in the C++ code if we don't pass any
+        # codes explicitly, so we must also make sure that this works
+        Path([[np.nan, np.nan], [np.nan, np.nan]]),
+        # we should also make sure that this cleanup works if there's some
+        # multi-vertex curves
+        Path([[np.nan, np.nan], [np.nan, np.nan], [np.nan, np.nan],
+              [np.nan, np.nan]],
+             [Path.MOVETO, Path.CURVE3, Path.CURVE3, Path.CLOSEPOLY])
+    ]
+    for p in paths:
+        cleaned = p.cleaned(remove_nans=True)
+        assert len(cleaned) == 1
+        assert cleaned.codes[0] == Path.STOP

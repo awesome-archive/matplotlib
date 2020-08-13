@@ -4,7 +4,7 @@
 Event handling and picking
 **************************
 
-matplotlib works with a number of user interface toolkits (wxpython,
+Matplotlib works with a number of user interface toolkits (wxpython,
 tkinter, qt4, gtk, and macosx) and in order to support features like
 interactive panning and zooming of figures, it is helpful to the
 developers to have an API for interacting with the figure via key
@@ -29,13 +29,13 @@ connect your function to the event manager, which is part of the
 example that prints the location of the mouse click and which button
 was pressed::
 
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    fig, ax = plt.subplots()
     ax.plot(np.random.rand(10))
 
     def onclick(event):
-        print('button=%d, x=%d, y=%d, xdata=%f, ydata=%f' %
-              (event.button, event.x, event.y, event.xdata, event.ydata))
+        print('%s click: button=%d, x=%d, y=%d, xdata=%f, ydata=%f' %
+              ('double' if event.dblclick else 'single', event.button,
+               event.x, event.y, event.xdata, event.ydata))
 
     cid = fig.canvas.mpl_connect('button_press_event', onclick)
 
@@ -47,33 +47,36 @@ disconnect the callback, just call::
     fig.canvas.mpl_disconnect(cid)
 
 .. note::
-   The canvas retains only weak references to the callbacks.  Therefore
-   if a callback is a method of a class instance, you need to retain
-   a reference to that instance.  Otherwise the instance will be
-   garbage-collected and the callback will vanish.
+   The canvas retains only weak references to instance methods used as
+   callbacks.  Therefore, you need to retain a reference to instances owning
+   such methods.  Otherwise the instance will be garbage-collected and the
+   callback will vanish.
+
+   This does not affect free functions used as callbacks.
 
 
 Here are the events that you can connect to, the class instances that
-are sent back to you when the event occurs, and the event descriptions
+are sent back to you when the event occurs, and the event descriptions:
 
-
-=======================  ======================================================================================
-Event name               Class and description
-=======================  ======================================================================================
-'button_press_event'     :class:`~matplotlib.backend_bases.MouseEvent`     - mouse button is pressed
-'button_release_event'   :class:`~matplotlib.backend_bases.MouseEvent`     - mouse button is released
-'draw_event'             :class:`~matplotlib.backend_bases.DrawEvent`      - canvas draw
-'key_press_event'        :class:`~matplotlib.backend_bases.KeyEvent`       - key is pressed
-'key_release_event'      :class:`~matplotlib.backend_bases.KeyEvent`       - key is released
-'motion_notify_event'    :class:`~matplotlib.backend_bases.MouseEvent`     - mouse motion
-'pick_event'             :class:`~matplotlib.backend_bases.PickEvent`      - an object in the canvas is selected
-'resize_event'           :class:`~matplotlib.backend_bases.ResizeEvent`    - figure canvas is resized
-'scroll_event'           :class:`~matplotlib.backend_bases.MouseEvent`     - mouse scroll wheel is rolled
-'figure_enter_event'     :class:`~matplotlib.backend_bases.LocationEvent`  - mouse enters a new figure
-'figure_leave_event'     :class:`~matplotlib.backend_bases.LocationEvent`  - mouse leaves a figure
-'axes_enter_event'       :class:`~matplotlib.backend_bases.LocationEvent`  - mouse enters a new axes
-'axes_leave_event'       :class:`~matplotlib.backend_bases.LocationEvent`  - mouse leaves an axes
-=======================  ======================================================================================
+====================== ================ ======================================
+Event name             Class            Description
+====================== ================ ======================================
+'button_press_event'   `.MouseEvent`    mouse button is pressed
+'button_release_event' `.MouseEvent`    mouse button is released
+'close_event'          `.CloseEvent`    figure is closed
+'draw_event'           `.DrawEvent`     canvas has been drawn (but screen
+                                        widget not updated yet)
+'key_press_event'      `.KeyEvent`      key is pressed
+'key_release_event'    `.KeyEvent`      key is released
+'motion_notify_event'  `.MouseEvent`    mouse moves
+'pick_event'           `.PickEvent`     artist in the canvas is selected
+'resize_event'         `.ResizeEvent`   figure canvas is resized
+'scroll_event'         `.MouseEvent`    mouse scroll wheel is rolled
+'figure_enter_event'   `.LocationEvent` mouse enters a new figure
+'figure_leave_event'   `.LocationEvent` mouse leaves a figure
+'axes_enter_event'     `.LocationEvent` mouse enters a new axes
+'axes_leave_event'     `.LocationEvent` mouse leaves an axes
+====================== ================ ======================================
 
 .. _event-attributes:
 
@@ -238,15 +241,12 @@ Here is the solution::
     plt.show()
 
 
-**Extra credit**: use the animation blit techniques discussed in the
-`animations recipe
-<http://www.scipy.org/Cookbook/Matplotlib/Animations>`_ to make the
-animated drawing faster and smoother.
+**Extra credit**: Use blitting to make the animated drawing faster and
+smoother.
 
 Extra credit solution::
 
-    # draggable rectangle with the animation blit techniques; see
-    # http://www.scipy.org/Cookbook/Matplotlib/Animations
+    # Draggable rectangle with blitting.
     import numpy as np
     import matplotlib.pyplot as plt
 
@@ -413,7 +413,7 @@ You can enable picking by setting the ``picker`` property of an
 :class:`~matplotlib.artist.Artist` (e.g., a matplotlib
 :class:`~matplotlib.lines.Line2D`, :class:`~matplotlib.text.Text`,
 :class:`~matplotlib.patches.Patch`, :class:`~matplotlib.patches.Polygon`,
-:class:`~matplotlib.patches.AxesImage`, etc...)
+:class:`~matplotlib.image.AxesImage`, etc...)
 
 There are a variety of meanings of the ``picker`` property:
 
@@ -516,8 +516,8 @@ Picking exercise
 
 Create a data set of 100 arrays of 1000 Gaussian random numbers and
 compute the sample mean and standard deviation of each of them (hint:
-numpy arrays have a mean and std method) and make a xy marker plot of
-the 100 means vs the 100 standard deviations.  Connect the line
+NumPy arrays have a mean and std method) and make a xy marker plot of
+the 100 means vs. the 100 standard deviations.  Connect the line
 created by the plot command to the pick event, and plot the original
 time series of the data that generated the clicked on points.  If more
 than one point is within the tolerance of the clicked on point, you
@@ -526,7 +526,7 @@ can use multiple subplots to plot the multiple time series.
 Exercise solution::
 
     """
-    compute the mean and stddev of 100 data sets and plot mean vs stddev.
+    compute the mean and stddev of 100 data sets and plot mean vs. stddev.
     When you click on one of the mu, sigma points, plot the raw data from
     the dataset that generated the mean and stddev
     """

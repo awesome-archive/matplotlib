@@ -58,11 +58,14 @@ RendererAgg::RendererAgg(unsigned int width, unsigned int height, double dpi)
     rendererBase.clear(_fill_color);
     rendererAA.attach(rendererBase);
     rendererBin.attach(rendererBase);
-    hatchRenderingBuffer.attach(hatchBuffer, HATCH_SIZE, HATCH_SIZE, HATCH_SIZE * 4);
+    hatch_size = int(dpi);
+    hatchBuffer = new agg::int8u[hatch_size * hatch_size * 4];
+    hatchRenderingBuffer.attach(hatchBuffer, hatch_size, hatch_size, hatch_size * 4);
 }
 
 RendererAgg::~RendererAgg()
 {
+    delete[] hatchBuffer;
     delete[] alphaBuffer;
     delete[] pixBuffer;
 }
@@ -98,7 +101,7 @@ BufferRegion *RendererAgg::copy_from_bbox(agg::rect_d in_rect)
 void RendererAgg::restore_region(BufferRegion &region)
 {
     if (region.get_data() == NULL) {
-        throw "Cannot restore_region from NULL data";
+        throw std::runtime_error("Cannot restore_region from NULL data");
     }
 
     agg::rendering_buffer rbuf;
@@ -112,7 +115,7 @@ void
 RendererAgg::restore_region(BufferRegion &region, int xx1, int yy1, int xx2, int yy2, int x, int y )
 {
     if (region.get_data() == NULL) {
-        throw "Cannot restore_region from NULL data";
+        throw std::runtime_error("Cannot restore_region from NULL data");
     }
 
     agg::rect_i &rrect = region.get_rect();
@@ -126,10 +129,15 @@ RendererAgg::restore_region(BufferRegion &region, int xx1, int yy1, int xx2, int
 }
 
 bool RendererAgg::render_clippath(py::PathIterator &clippath,
-                                  const agg::trans_affine &clippath_trans)
+                                  const agg::trans_affine &clippath_trans,
+                                  e_snap_mode snap_mode)
 {
     typedef agg::conv_transform<py::PathIterator> transformed_path_t;
-    typedef agg::conv_curve<transformed_path_t> curve_t;
+    typedef PathNanRemover<transformed_path_t> nan_removed_t;
+    typedef PathClipper<nan_removed_t> clipped_t;
+    typedef PathSnapper<clipped_t> snapped_t;
+    typedef PathSimplifier<snapped_t> simplify_t;
+    typedef agg::conv_curve<simplify_t> curve_t;
 
     bool has_clippath = (clippath.total_vertices() != 0);
 
@@ -142,7 +150,13 @@ bool RendererAgg::render_clippath(py::PathIterator &clippath,
 
         rendererBaseAlphaMask.clear(agg::gray8(0, 0));
         transformed_path_t transformed_clippath(clippath, trans);
-        curve_t curved_clippath(transformed_clippath);
+        nan_removed_t nan_removed_clippath(transformed_clippath, true, clippath.has_curves());
+        clipped_t clipped_clippath(nan_removed_clippath, !clippath.has_curves(), width, height);
+        snapped_t snapped_clippath(clipped_clippath, snap_mode, clippath.total_vertices(), 0.0);
+        simplify_t simplified_clippath(snapped_clippath,
+                                       clippath.should_simplify() && !clippath.has_curves(),
+                                       clippath.simplify_threshold());
+        curve_t curved_clippath(simplified_clippath);
         theRasterizer.add_path(curved_clippath);
         rendererAlphaMask.color(agg::gray8(255, 255));
         agg::render_scanlines(theRasterizer, scanlineAlphaMask, rendererAlphaMask);
@@ -151,71 +165,6 @@ bool RendererAgg::render_clippath(py::PathIterator &clippath,
     }
 
     return has_clippath;
-}
-
-void RendererAgg::tostring_rgb(uint8_t *buf)
-{
-    // "Return the rendered buffer as an RGB string"
-
-    int row_len = width * 3;
-
-    agg::rendering_buffer renderingBufferTmp;
-    renderingBufferTmp.attach(buf, width, height, row_len);
-
-    agg::color_conv(&renderingBufferTmp, &renderingBuffer, agg::color_conv_rgba32_to_rgb24());
-}
-
-void RendererAgg::tostring_argb(uint8_t *buf)
-{
-    //"Return the rendered buffer as an RGB string";
-
-    int row_len = width * 4;
-
-    agg::rendering_buffer renderingBufferTmp;
-    renderingBufferTmp.attach(buf, width, height, row_len);
-    agg::color_conv(&renderingBufferTmp, &renderingBuffer, agg::color_conv_rgba32_to_argb32());
-}
-
-void RendererAgg::tostring_bgra(uint8_t *buf)
-{
-    //"Return the rendered buffer as an RGB string";
-
-    int row_len = width * 4;
-
-    agg::rendering_buffer renderingBufferTmp;
-    renderingBufferTmp.attach(buf, width, height, row_len);
-
-    agg::color_conv(&renderingBufferTmp, &renderingBuffer, agg::color_conv_rgba32_to_bgra32());
-}
-
-agg::rect_i RendererAgg::get_content_extents()
-{
-    agg::rect_i r(width, height, 0, 0);
-
-    // Looks at the alpha channel to find the minimum extents of the image
-    unsigned char *pixel = pixBuffer + 3;
-    for (int y = 0; y < (int)height; ++y) {
-        for (int x = 0; x < (int)width; ++x) {
-            if (*pixel) {
-                if (x < r.x1)
-                    r.x1 = x;
-                if (y < r.y1)
-                    r.y1 = y;
-                if (x > r.x2)
-                    r.x2 = x;
-                if (y > r.y2)
-                    r.y2 = y;
-            }
-            pixel += 4;
-        }
-    }
-
-    r.x1 = std::max(0, r.x1);
-    r.y1 = std::max(0, r.y1);
-    r.x2 = std::min(r.x2 + 1, (int)width);
-    r.y2 = std::min(r.y2 + 1, (int)height);
-
-    return r;
 }
 
 void RendererAgg::clear()

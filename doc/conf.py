@@ -1,5 +1,3 @@
-# -*- coding: utf-8 -*-
-#
 # Matplotlib documentation build configuration file, created by
 # sphinx-quickstart on Fri May  2 12:33:25 2008.
 #
@@ -12,50 +10,157 @@
 # serve to show the default value.
 
 import os
+import shutil
+import subprocess
 import sys
+
+import matplotlib
 import sphinx
+
+from datetime import datetime
 
 # If your extensions are in another directory, add it here. If the directory
 # is relative to the documentation root, use os.path.abspath to make it
 # absolute, like shown here.
 sys.path.append(os.path.abspath('.'))
+sys.path.append('.')
 
 # General configuration
 # ---------------------
 
-# Add any Sphinx extension module names here, as strings. They can be extensions
-# coming with Sphinx (named 'sphinx.ext.*') or your custom ones.
-extensions = ['matplotlib.sphinxext.mathmpl', 'sphinxext.math_symbol_table',
-              'sphinx.ext.autodoc', 'matplotlib.sphinxext.only_directives',
-              'sphinx.ext.doctest', 'sphinx.ext.autosummary',
-              'matplotlib.sphinxext.plot_directive',
-              'sphinx.ext.inheritance_diagram',
-              'sphinxext.gen_gallery', 'sphinxext.gen_rst',
-              'sphinxext.github',
-              'numpydoc']
+# Strip backslahes in function's signature
+# To be removed when numpydoc > 0.9.x
+strip_signature_backslash = True
 
-exclude_patterns = ['api/api_changes/*', 'users/whats_new/*']
+# Add any Sphinx extension module names here, as strings. They can be
+# extensions coming with Sphinx (named 'sphinx.ext.*') or your custom ones.
+extensions = [
+    'sphinx.ext.autodoc',
+    'sphinx.ext.autosummary',
+    'sphinx.ext.doctest',
+    'sphinx.ext.inheritance_diagram',
+    'sphinx.ext.intersphinx',
+    'sphinx.ext.ifconfig',
+    'sphinx.ext.viewcode',
+    'IPython.sphinxext.ipython_console_highlighting',
+    'IPython.sphinxext.ipython_directive',
+    'numpydoc',  # Needs to be loaded *after* autodoc.
+    'sphinx_gallery.gen_gallery',
+    'matplotlib.sphinxext.mathmpl',
+    'matplotlib.sphinxext.plot_directive',
+    'sphinxcontrib.inkscapeconverter',
+    'sphinxext.custom_roles',
+    'sphinxext.github',
+    'sphinxext.math_symbol_table',
+    'sphinxext.missing_references',
+    'sphinxext.mock_gui_toolkits',
+    'sphinxext.skip_deprecated',
+    'sphinx_copybutton',
+]
 
-# Use IPython's console highlighting by default
-try:
-    from IPython.sphinxext import ipython_console_highlighting
-except ImportError:
-    raise ImportError(
-        "IPython must be installed to build the matplotlib docs")
-else:
-    extensions.append('IPython.sphinxext.ipython_console_highlighting')
-    extensions.append('IPython.sphinxext.ipython_directive')
+exclude_patterns = [
+    'api/prev_api_changes/api_changes_*/*',
+    # Be sure to update users/whats_new.rst:
+    'users/prev_whats_new/whats_new_3.3.0.rst',
+]
 
-try:
-    import numpydoc
-except ImportError:
-    raise ImportError("No module named numpydoc - you need to install "
-                      "numpydoc to build the documentation.")
 
+def _check_dependencies():
+    names = {
+        "colorspacious": 'colorspacious',
+        "IPython.sphinxext.ipython_console_highlighting": 'ipython',
+        "matplotlib": 'matplotlib',
+        "numpydoc": 'numpydoc',
+        "PIL.Image": 'pillow',
+        "sphinx_copybutton": 'sphinx_copybutton',
+        "sphinx_gallery": 'sphinx_gallery',
+        "sphinxcontrib.inkscapeconverter": 'sphinxcontrib-svg2pdfconverter',
+    }
+    missing = []
+    for name in names:
+        try:
+            __import__(name)
+        except ImportError:
+            missing.append(names[name])
+    if missing:
+        raise ImportError(
+            "The following dependencies are missing to build the "
+            "documentation: {}".format(", ".join(missing)))
+    if shutil.which('dot') is None:
+        raise OSError(
+            "No binary named dot - graphviz must be installed to build the "
+            "documentation")
+
+_check_dependencies()
+
+
+# Import only after checking for dependencies.
+# gallery_order.py from the sphinxext folder provides the classes that
+# allow custom ordering of sections and subsections of the gallery
+import sphinxext.gallery_order as gallery_order
+# The following import is only necessary to monkey patch the signature later on
+from sphinx_gallery import gen_rst
+
+# On Linux, prevent plt.show() from emitting a non-GUI backend warning.
+os.environ.pop("DISPLAY", None)
 
 autosummary_generate = True
 
 autodoc_docstring_signature = True
+autodoc_default_options = {'members': None, 'undoc-members': None}
+
+# missing-references names matches sphinx>=3 behavior, so we can't be nitpicky
+# for older sphinxes.
+nitpicky = sphinx.version_info >= (3,)
+# change this to True to update the allowed failures
+missing_references_write_json = False
+missing_references_warn_unused_ignores = False
+
+intersphinx_mapping = {
+    'Pillow': ('https://pillow.readthedocs.io/en/stable/', None),
+    'cycler': ('https://matplotlib.org/cycler/', None),
+    'dateutil': ('https://dateutil.readthedocs.io/en/stable/', None),
+    'ipykernel': ('https://ipykernel.readthedocs.io/en/latest/', None),
+    'numpy': ('https://numpy.org/doc/stable/', None),
+    'pandas': ('https://pandas.pydata.org/pandas-docs/stable/', None),
+    'pytest': ('https://pytest.org/en/stable/', None),
+    'python': ('https://docs.python.org/3/', None),
+    'scipy': ('https://docs.scipy.org/doc/scipy/reference/', None),
+}
+
+
+# Sphinx gallery configuration
+sphinx_gallery_conf = {
+    'examples_dirs': ['../examples', '../tutorials'],
+    'filename_pattern': '^((?!sgskip).)*$',
+    'gallery_dirs': ['gallery', 'tutorials'],
+    'doc_module': ('matplotlib', 'mpl_toolkits'),
+    'reference_url': {
+        'matplotlib': None,
+        'numpy': 'https://docs.scipy.org/doc/numpy/',
+        'scipy': 'https://docs.scipy.org/doc/scipy/reference/',
+    },
+    'backreferences_dir': 'api/_as_gen',
+    'subsection_order': gallery_order.sectionorder,
+    'within_subsection_order': gallery_order.subsectionorder,
+    'remove_config_comments': True,
+    'min_reported_time': 1,
+    'thumbnail_size': (320, 224),
+    'compress_images': ('thumbnails', 'images'),
+    'matplotlib_animations': True,
+}
+
+plot_gallery = 'True'
+
+# Monkey-patching gallery signature to include search keywords
+gen_rst.SPHX_GLR_SIG = """\n
+.. only:: html
+
+ .. rst-class:: sphx-glr-signature
+
+    Keywords: matplotlib code example, codex, python plot, pyplot
+    `Gallery generated by Sphinx-Gallery
+    <https://sphinx-gallery.readthedocs.io>`_\n"""
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ['_templates']
@@ -70,18 +175,26 @@ source_encoding = "utf-8"
 master_doc = 'contents'
 
 # General substitutions.
+try:
+    SHA = subprocess.check_output(
+        ['git', 'describe', '--dirty']).decode('utf-8').strip()
+# Catch the case where git is not installed locally, and use the versioneer
+# version number instead
+except (subprocess.CalledProcessError, FileNotFoundError):
+    SHA = matplotlib.__version__
+
+html_context = {'sha': SHA}
+
 project = 'Matplotlib'
-copyright = '2002 - 2012 John Hunter, Darren Dale, Eric Firing, Michael Droettboom and the matplotlib development team; 2012 - 2014 The matplotlib development team'
+copyright = ('2002 - 2012 John Hunter, Darren Dale, Eric Firing, '
+             'Michael Droettboom and the Matplotlib development '
+             f'team; 2012 - {datetime.now().year} The Matplotlib development team')
+
 
 # The default replacements for |version| and |release|, also used in various
 # other places throughout the built documents.
 #
 # The short X.Y version.
-try:
-    import matplotlib
-except ImportError:
-    msg = "Error: matplotlib must be installed before building the documentation"
-    sys.exit(msg)
 
 version = matplotlib.__version__
 # The full version, including alpha/beta/rc tags.
@@ -117,34 +230,9 @@ default_role = 'obj'
 
 plot_formats = [('png', 100), ('pdf', 100)]
 
-# Subdirectories in 'examples/' directory of package and titles for gallery
-mpl_example_sections = [
-    ('lines_bars_and_markers', 'Lines, bars, and markers'),
-    ('shapes_and_collections', 'Shapes and collections'),
-    ('statistics', 'Statistical plots'),
-    ('images_contours_and_fields', 'Images, contours, and fields'),
-    ('pie_and_polar_charts', 'Pie and polar charts'),
-    ('color', 'Color'),
-    ('text_labels_and_annotations', 'Text, labels, and annotations'),
-    ('ticks_and_spines', 'Ticks and spines'),
-    ('scales', 'Axis scales'),
-    ('subplots_axes_and_figures', 'Subplots, axes, and figures'),
-    ('style_sheets', 'Style sheets'),
-    ('specialty_plots', 'Specialty plots'),
-    ('showcase', 'Showcase'),
-    ('api', 'API'),
-    ('pylab_examples', 'pylab examples'),
-    ('mplot3d', 'mplot3d toolkit'),
-    ('axes_grid1', 'axes_grid1 toolkit'),
-    ('axisartist', 'axisartist toolkit'),
-    ('units', 'units'),
-    ('widgets', 'widgets'),
-    ]
+# GitHub extension
 
-
-# Github extension
-
-github_project_url = "http://github.com/matplotlib/matplotlib/"
+github_project_url = "https://github.com/matplotlib/matplotlib/"
 
 # Options for HTML output
 # -----------------------
@@ -153,7 +241,7 @@ github_project_url = "http://github.com/matplotlib/matplotlib/"
 # must exist either in Sphinx' static/ path, or in one of the custom paths
 # given in html_static_path.
 #html_style = 'matplotlib.css'
-html_style = 'mpl.css'
+html_style = f'mpl.css?{SHA}'
 
 # The name for this set of Sphinx documents.  If None, it defaults to
 # "<project> v<release> documentation".
@@ -176,10 +264,6 @@ html_file_suffix = '.html'
 # using the given strftime format.
 html_last_updated_fmt = '%b %d, %Y'
 
-# If true, SmartyPants will be used to convert quotes and dashes to
-# typographically correct entities.
-#html_use_smartypants = True
-
 # Content template for the index page.
 html_index = 'index.html'
 
@@ -188,17 +272,12 @@ html_index = 'index.html'
 
 # Custom sidebar templates, maps page names to templates.
 html_sidebars = {
-    'index': ['badgesidebar.html','donate_sidebar.html',
-              'indexsidebar.html', 'searchbox.html'],
-    '**': ['badgesidebar.html', 'localtoc.html',
-           'relations.html', 'sourcelink.html', 'searchbox.html']
+    'index': [
+        # 'sidebar_announcement.html',
+        'sidebar_versions.html',
+        'donate_sidebar.html'],
+    '**': ['localtoc.html', 'relations.html', 'pagesource.html']
 }
-
-# Additional templates that should be rendered to pages, maps page names to
-# template names.
-html_additional_pages = {'index': 'index.html',
-                         'gallery':'gallery.html',
-                         'citing': 'citing.html'}
 
 # If false, no module index is generated.
 #html_use_modindex = True
@@ -214,6 +293,9 @@ html_use_opensearch = 'False'
 # Output file base name for HTML help builder.
 htmlhelp_basename = 'Matplotlibdoc'
 
+# Use typographic quote characters.
+smartquotes = False
+
 # Path to favicon
 html_favicon = '_static/favicon.ico'
 
@@ -223,16 +305,13 @@ html_favicon = '_static/favicon.ico'
 # The paper size ('letter' or 'a4').
 latex_paper_size = 'letter'
 
-# The font size ('10pt', '11pt' or '12pt').
-latex_font_size = '11pt'
-
 # Grouping the document tree into LaTeX files. List of tuples
 # (source start file, target name, title, author, document class [howto/manual]).
 
 latex_documents = [
     ('contents', 'Matplotlib.tex', 'Matplotlib',
-     'John Hunter, Darren Dale, Eric Firing, Michael Droettboom and the '
-     'matplotlib development team', 'manual'),
+     'John Hunter\\and Darren Dale\\and Eric Firing\\and Michael Droettboom'
+     '\\and and the matplotlib development team', 'manual'),
 ]
 
 
@@ -240,8 +319,12 @@ latex_documents = [
 # the title page.
 latex_logo = None
 
+latex_elements = {}
 # Additional stuff for the LaTeX preamble.
-latex_preamble = r"""
+latex_elements['preamble'] = r"""
+   % One line per author on title page
+   \DeclareRobustCommand{\and}%
+     {\end{tabular}\kern-\tabcolsep\\\begin{tabular}[t]{c}}%
    % In the parameters section, place a newline after the Parameters
    % header.  (This is stolen directly from Numpy's conf.py, since it
    % affects Numpy-style docstrings).
@@ -261,6 +344,7 @@ latex_preamble = r"""
    \usepackage{enumitem}
    \setlistdepth{2048}
 """
+latex_elements['pointsize'] = '11pt'
 
 # Documents to append as an appendix to all manuals.
 latex_appendices = []
@@ -268,15 +352,11 @@ latex_appendices = []
 # If false, no module index is generated.
 latex_use_modindex = True
 
-latex_use_parts = True
+latex_toplevel_sectioning = 'part'
 
 # Show both class-level docstring and __init__ docstring in class
 # documentation
 autoclass_content = 'both'
-
-rst_epilog = """
-.. |minimum_numpy_version| replace:: %s
-""" % matplotlib.__version__numpy__
 
 texinfo_documents = [
     ("contents", 'matplotlib', 'Matplotlib Documentation',
@@ -286,149 +366,30 @@ texinfo_documents = [
      1),
 ]
 
-try:
-    from unittest.mock import MagicMock
-except:
-    from mock import MagicMock
-
-
-class MyWX(MagicMock):
-    class Panel(object):
-        pass
-
-    class ToolBar(object):
-        pass
-
-    class Frame(object):
-        pass
-
-    VERSION_STRING = '2.8.12'
-
-
-class MyPyQt4(MagicMock):
-    class QtGui(object):
-        # PyQt4.QtGui public classes.
-        # Generated with
-        # textwrap.fill([name for name in dir(PyQt4.QtGui)
-        #                if isinstance(getattr(PyQt4.QtGui, name), type)])
-        _QtGui_public_classes = """\
-        Display QAbstractButton QAbstractGraphicsShapeItem
-        QAbstractItemDelegate QAbstractItemView QAbstractPrintDialog
-        QAbstractProxyModel QAbstractScrollArea QAbstractSlider
-        QAbstractSpinBox QAbstractTextDocumentLayout QAction QActionEvent
-        QActionGroup QApplication QBitmap QBoxLayout QBrush QButtonGroup
-        QCalendarWidget QCheckBox QClipboard QCloseEvent QColor QColorDialog
-        QColumnView QComboBox QCommandLinkButton QCommonStyle QCompleter
-        QConicalGradient QContextMenuEvent QCursor QDataWidgetMapper QDateEdit
-        QDateTimeEdit QDesktopServices QDesktopWidget QDial QDialog
-        QDialogButtonBox QDirModel QDockWidget QDoubleSpinBox QDoubleValidator
-        QDrag QDragEnterEvent QDragLeaveEvent QDragMoveEvent QDropEvent
-        QErrorMessage QFileDialog QFileIconProvider QFileOpenEvent
-        QFileSystemModel QFocusEvent QFocusFrame QFont QFontComboBox
-        QFontDatabase QFontDialog QFontInfo QFontMetrics QFontMetricsF
-        QFormLayout QFrame QGesture QGestureEvent QGestureRecognizer QGlyphRun
-        QGradient QGraphicsAnchor QGraphicsAnchorLayout QGraphicsBlurEffect
-        QGraphicsColorizeEffect QGraphicsDropShadowEffect QGraphicsEffect
-        QGraphicsEllipseItem QGraphicsGridLayout QGraphicsItem
-        QGraphicsItemAnimation QGraphicsItemGroup QGraphicsLayout
-        QGraphicsLayoutItem QGraphicsLineItem QGraphicsLinearLayout
-        QGraphicsObject QGraphicsOpacityEffect QGraphicsPathItem
-        QGraphicsPixmapItem QGraphicsPolygonItem QGraphicsProxyWidget
-        QGraphicsRectItem QGraphicsRotation QGraphicsScale QGraphicsScene
-        QGraphicsSceneContextMenuEvent QGraphicsSceneDragDropEvent
-        QGraphicsSceneEvent QGraphicsSceneHelpEvent QGraphicsSceneHoverEvent
-        QGraphicsSceneMouseEvent QGraphicsSceneMoveEvent
-        QGraphicsSceneResizeEvent QGraphicsSceneWheelEvent
-        QGraphicsSimpleTextItem QGraphicsTextItem QGraphicsTransform
-        QGraphicsView QGraphicsWidget QGridLayout QGroupBox QHBoxLayout
-        QHeaderView QHelpEvent QHideEvent QHoverEvent QIcon QIconDragEvent
-        QIconEngine QIconEngineV2 QIdentityProxyModel QImage QImageIOHandler
-        QImageReader QImageWriter QInputContext QInputContextFactory
-        QInputDialog QInputEvent QInputMethodEvent QIntValidator QItemDelegate
-        QItemEditorCreatorBase QItemEditorFactory QItemSelection
-        QItemSelectionModel QItemSelectionRange QKeyEvent QKeyEventTransition
-        QKeySequence QLCDNumber QLabel QLayout QLayoutItem QLineEdit
-        QLinearGradient QListView QListWidget QListWidgetItem QMainWindow
-        QMatrix QMatrix2x2 QMatrix2x3 QMatrix2x4 QMatrix3x2 QMatrix3x3
-        QMatrix3x4 QMatrix4x2 QMatrix4x3 QMatrix4x4 QMdiArea QMdiSubWindow
-        QMenu QMenuBar QMessageBox QMimeSource QMouseEvent
-        QMouseEventTransition QMoveEvent QMovie QPageSetupDialog QPaintDevice
-        QPaintEngine QPaintEngineState QPaintEvent QPainter QPainterPath
-        QPainterPathStroker QPalette QPanGesture QPen QPicture QPictureIO
-        QPinchGesture QPixmap QPixmapCache QPlainTextDocumentLayout
-        QPlainTextEdit QPolygon QPolygonF QPrintDialog QPrintEngine
-        QPrintPreviewDialog QPrintPreviewWidget QPrinter QPrinterInfo
-        QProgressBar QProgressDialog QProxyModel QPushButton QPyTextObject
-        QQuaternion QRadialGradient QRadioButton QRawFont QRegExpValidator
-        QRegion QResizeEvent QRubberBand QScrollArea QScrollBar
-        QSessionManager QShortcut QShortcutEvent QShowEvent QSizeGrip
-        QSizePolicy QSlider QSortFilterProxyModel QSound QSpacerItem QSpinBox
-        QSplashScreen QSplitter QSplitterHandle QStackedLayout QStackedWidget
-        QStandardItem QStandardItemModel QStaticText QStatusBar
-        QStatusTipEvent QStringListModel QStyle QStyleFactory QStyleHintReturn
-        QStyleHintReturnMask QStyleHintReturnVariant QStyleOption
-        QStyleOptionButton QStyleOptionComboBox QStyleOptionComplex
-        QStyleOptionDockWidget QStyleOptionDockWidgetV2 QStyleOptionFocusRect
-        QStyleOptionFrame QStyleOptionFrameV2 QStyleOptionFrameV3
-        QStyleOptionGraphicsItem QStyleOptionGroupBox QStyleOptionHeader
-        QStyleOptionMenuItem QStyleOptionProgressBar QStyleOptionProgressBarV2
-        QStyleOptionRubberBand QStyleOptionSizeGrip QStyleOptionSlider
-        QStyleOptionSpinBox QStyleOptionTab QStyleOptionTabBarBase
-        QStyleOptionTabBarBaseV2 QStyleOptionTabV2 QStyleOptionTabV3
-        QStyleOptionTabWidgetFrame QStyleOptionTabWidgetFrameV2
-        QStyleOptionTitleBar QStyleOptionToolBar QStyleOptionToolBox
-        QStyleOptionToolBoxV2 QStyleOptionToolButton QStyleOptionViewItem
-        QStyleOptionViewItemV2 QStyleOptionViewItemV3 QStyleOptionViewItemV4
-        QStylePainter QStyledItemDelegate QSwipeGesture QSyntaxHighlighter
-        QSystemTrayIcon QTabBar QTabWidget QTableView QTableWidget
-        QTableWidgetItem QTableWidgetSelectionRange QTabletEvent
-        QTapAndHoldGesture QTapGesture QTextBlock QTextBlockFormat
-        QTextBlockGroup QTextBlockUserData QTextBrowser QTextCharFormat
-        QTextCursor QTextDocument QTextDocumentFragment QTextDocumentWriter
-        QTextEdit QTextFormat QTextFragment QTextFrame QTextFrameFormat
-        QTextImageFormat QTextInlineObject QTextItem QTextLayout QTextLength
-        QTextLine QTextList QTextListFormat QTextObject QTextObjectInterface
-        QTextOption QTextTable QTextTableCell QTextTableCellFormat
-        QTextTableFormat QTimeEdit QToolBar QToolBox QToolButton QToolTip
-        QTouchEvent QTransform QTreeView QTreeWidget QTreeWidgetItem
-        QTreeWidgetItemIterator QUndoCommand QUndoGroup QUndoStack QUndoView
-        QVBoxLayout QValidator QVector2D QVector3D QVector4D QWhatsThis
-        QWhatsThisClickedEvent QWheelEvent QWidget QWidgetAction QWidgetItem
-        QWindowStateChangeEvent QWizard QWizardPage QWorkspace
-        QX11EmbedContainer QX11EmbedWidget QX11Info
-        """
-        for _name in _QtGui_public_classes.split():
-            locals()[_name] = type(_name, (), {})
-        del _name
-
-
-class MySip(MagicMock):
-    def getapi(*args):
-        return 1
-
-
-mockwxversion = MagicMock()
-mockwx = MyWX()
-mocksip = MySip()
-mockpyqt4 = MyPyQt4()
-sys.modules['wxversion'] = mockwxversion
-sys.modules['wx'] = mockwx
-sys.modules['sip'] = mocksip
-sys.modules['PyQt4'] = mockpyqt4
-
 # numpydoc config
 
 numpydoc_show_class_members = False
 
-# Skip deprecated members
+latex_engine = 'xelatex'  # or 'lualatex'
 
-def skip_deprecated(app, what, name, obj, skip, options):
-    if skip:
-        return skip
-    skipped = {"matplotlib.colors": ["ColorConverter", "hex2color", "rgb2hex"]}
-    skip_list = skipped.get(getattr(obj, "__module__", None))
-    if skip_list is not None:
-        return getattr(obj, "__name__", None) in skip_list
+latex_elements = {
+    'babel': r'\usepackage{babel}',
+    'fontpkg': r'\setmainfont{DejaVu Serif}',
+}
+
+html4_writer = True
+
+inheritance_node_attrs = dict(fontsize=16)
+
+graphviz_dot = shutil.which('dot')
+# Still use PNG until SVG linking is fixed
+# https://github.com/sphinx-doc/sphinx/issues/3176
+# graphviz_output_format = 'svg'
+
 
 def setup(app):
-    app.connect('autodoc-skip-member', skip_deprecated)
+    if any(st in version for st in ('post', 'alpha', 'beta')):
+        bld_type = 'dev'
+    else:
+        bld_type = 'rel'
+    app.add_config_value('releaselevel', bld_type, 'env')

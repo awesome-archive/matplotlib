@@ -1,31 +1,20 @@
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-
-import six
-
-from matplotlib.contour import ContourSet
-from matplotlib.tri.triangulation import Triangulation
-import matplotlib._tri as _tri
 import numpy as np
 
+from matplotlib import docstring
+from matplotlib.contour import ContourSet
+from matplotlib.tri.triangulation import Triangulation
 
+
+@docstring.dedent_interpd
 class TriContourSet(ContourSet):
     """
     Create and store a set of contour lines or filled regions for
     a triangular grid.
 
-    User-callable method: clabel
+    This class is typically not instantiated directly by the user but by
+    `~.Axes.tricontour` and `~.Axes.tricontourf`.
 
-    Useful attributes:
-      ax:
-        the axes object in which the contours are drawn
-      collections:
-        a silent_list of LineCollections or PolyCollections
-      levels:
-        contour levels
-      layers:
-        same as levels for line contours; half-way between
-        levels for filled contours.  See _process_colors method.
+    %(contour_set_attributes)s
     """
     def __init__(self, ax, *args, **kwargs):
         """
@@ -35,9 +24,9 @@ class TriContourSet(ContourSet):
 
         The first argument of the initializer must be an axes
         object.  The remaining arguments and keyword arguments
-        are described in TriContourSet.tricontour_doc.
+        are described in the docstring of `~.Axes.tricontour`.
         """
-        ContourSet.__init__(self, ax, *args, **kwargs)
+        super().__init__(ax, *args, **kwargs)
 
     def _process_args(self, *args, **kwargs):
         """
@@ -48,16 +37,14 @@ class TriContourSet(ContourSet):
             if self.levels is None:
                 self.levels = args[0].levels
         else:
+            from matplotlib import _tri
             tri, z = self._contour_args(args, kwargs)
             C = _tri.TriContourGenerator(tri.get_cpp_triangulation(), z)
-            x0 = tri.x.min()
-            x1 = tri.x.max()
-            y0 = tri.y.min()
-            y1 = tri.y.max()
-            self.ax.update_datalim([(x0, y0), (x1, y1)])
-            self.ax.autoscale_view()
+            self._mins = [tri.x.min(), tri.y.min()]
+            self._maxs = [tri.x.max(), tri.y.max()]
 
         self.cppContourGenerator = C
+        return kwargs
 
     def _get_allsegs_and_allkinds(self):
         """
@@ -86,206 +73,238 @@ class TriContourSet(ContourSet):
             fn = 'contour'
         tri, args, kwargs = Triangulation.get_from_args_and_kwargs(*args,
                                                                    **kwargs)
-        z = np.asarray(args[0])
+        z = np.ma.asarray(args[0])
         if z.shape != tri.x.shape:
             raise ValueError('z array must have same length as triangulation x'
                              ' and y arrays')
-        self.zmax = z.max()
-        self.zmin = z.min()
+
+        # z values must be finite, only need to check points that are included
+        # in the triangulation.
+        z_check = z[np.unique(tri.get_masked_triangles())]
+        if np.ma.is_masked(z_check):
+            raise ValueError('z must not contain masked points within the '
+                             'triangulation')
+        if not np.isfinite(z_check).all():
+            raise ValueError('z array must not contain non-finite values '
+                             'within the triangulation')
+
+        z = np.ma.masked_invalid(z, copy=False)
+        self.zmax = float(z_check.max())
+        self.zmin = float(z_check.min())
         if self.logscale and self.zmin <= 0:
             raise ValueError('Cannot %s log of negative values.' % fn)
-        self._contour_level_args(z, args[1:])
+        self._process_contour_level_args(args[1:])
         return (tri, z)
 
-    tricontour_doc = """
-        Draw contours on an unstructured triangular grid.
-        :func:`~matplotlib.pyplot.tricontour` and
-        :func:`~matplotlib.pyplot.tricontourf` draw contour lines and
-        filled contours, respectively.  Except as noted, function
-        signatures and return values are the same for both versions.
 
-        The triangulation can be specified in one of two ways; either::
+docstring.interpd.update(_tricontour_doc="""
+Draw contour %(type)s on an unstructured triangular grid.
 
-          tricontour(triangulation, ...)
+The triangulation can be specified in one of two ways; either ::
 
-        where triangulation is a :class:`matplotlib.tri.Triangulation`
-        object, or
+    %(func)s(triangulation, ...)
 
-        ::
+where *triangulation* is a `.Triangulation` object, or ::
 
-          tricontour(x, y, ...)
-          tricontour(x, y, triangles, ...)
-          tricontour(x, y, triangles=triangles, ...)
-          tricontour(x, y, mask=mask, ...)
-          tricontour(x, y, triangles, mask=mask, ...)
+    %(func)s(x, y, ...)
+    %(func)s(x, y, triangles, ...)
+    %(func)s(x, y, triangles=triangles, ...)
+    %(func)s(x, y, mask=mask, ...)
+    %(func)s(x, y, triangles, mask=mask, ...)
 
-        in which case a Triangulation object will be created.  See
-        :class:`~matplotlib.tri.Triangulation` for a explanation of
-        these possibilities.
+in which case a `.Triangulation` object will be created.  See that class'
+docstring for an explanation of these cases.
 
-        The remaining arguments may be::
+The remaining arguments may be::
 
-          tricontour(..., Z)
+    %(func)s(..., Z)
 
-        where *Z* is the array of values to contour, one per point
-        in the triangulation.  The level values are chosen
-        automatically.
+where *Z* is the array of values to contour, one per point in the
+triangulation.  The level values are chosen automatically.
 
-        ::
+::
 
-          tricontour(..., Z, N)
+    %(func)s(..., Z, levels)
 
-        contour *N* automatically-chosen levels.
+contour up to *levels+1* automatically chosen contour levels (*levels*
+intervals).
 
-        ::
+::
 
-          tricontour(..., Z, V)
+    %(func)s(..., Z, levels)
 
-        draw contour lines at the values specified in sequence *V*,
-        which must be in increasing order.
+draw contour %(type)s at the values specified in sequence *levels*, which must
+be in increasing order.
 
-        ::
+::
 
-          tricontourf(..., Z, V)
+    %(func)s(Z, **kwargs)
 
-        fill the (len(*V*)-1) regions between the values in *V*,
-        which must be in increasing order.
+Use keyword arguments to control colors, linewidth, origin, cmap ... see below
+for more details.
 
-        ::
+Parameters
+----------
+triangulation : `.Triangulation`, optional
+    The unstructured triangular grid.
 
-          tricontour(Z, **kwargs)
+    If specified, then *x*, *y*, *triangles*, and *mask* are not accepted.
 
-        Use keyword args to control colors, linewidth, origin, cmap ... see
-        below for more details.
+x, y : array-like, optional
+    The coordinates of the values in *Z*.
 
-        ``C = tricontour(...)`` returns a
-        :class:`~matplotlib.contour.TriContourSet` object.
+triangles : int array-like of shape (ntri, 3), optional
+    For each triangle, the indices of the three points that make up the
+    triangle, ordered in an anticlockwise manner.  If not specified, the
+    Delaunay triangulation is calculated.
 
-        Optional keyword arguments:
+mask : bool array-like of shape (ntri), optional
+    Which triangles are masked out.
 
-          *colors*: [ *None* | string | (mpl_colors) ]
-            If *None*, the colormap specified by cmap will be used.
+Z : array-like(N, M)
+    The height values over which the contour is drawn.
 
-            If a string, like 'r' or 'red', all levels will be plotted in this
-            color.
+levels : int or array-like, optional
+    Determines the number and positions of the contour lines / regions.
 
-            If a tuple of matplotlib color args (string, float, rgb, etc),
-            different levels will be plotted in different colors in the order
-            specified.
+    If an int *n*, use `~matplotlib.ticker.MaxNLocator`, which tries to
+    automatically choose no more than *n+1* "nice" contour levels between
+    *vmin* and *vmax*.
 
-          *alpha*: float
-            The alpha blending value
+    If array-like, draw contour lines at the specified levels.  The values must
+    be in increasing order.
 
-          *cmap*: [ *None* | Colormap ]
-            A cm :class:`~matplotlib.colors.Colormap` instance or
-            *None*. If *cmap* is *None* and *colors* is *None*, a
-            default Colormap is used.
+Returns
+-------
+`~matplotlib.tri.TriContourSet`
 
-          *norm*: [ *None* | Normalize ]
-            A :class:`matplotlib.colors.Normalize` instance for
-            scaling data values to colors. If *norm* is *None* and
-            *colors* is *None*, the default linear scaling is used.
+Other Parameters
+----------------
+colors : color string or sequence of colors, optional
+    The colors of the levels, i.e., the contour %(type)s.
 
-          *levels* [level0, level1, ..., leveln]
-            A list of floating point numbers indicating the level
-            curves to draw, in increasing order; e.g., to draw just
-            the zero contour pass ``levels=[0]``
+    The sequence is cycled for the levels in ascending order. If the sequence
+    is shorter than the number of levels, it's repeated.
 
-          *origin*: [ *None* | 'upper' | 'lower' | 'image' ]
-            If *None*, the first value of *Z* will correspond to the
-            lower left corner, location (0,0). If 'image', the rc
-            value for ``image.origin`` will be used.
+    As a shortcut, single color strings may be used in place of one-element
+    lists, i.e. ``'red'`` instead of ``['red']`` to color all levels with the
+    same color. This shortcut does only work for color strings, not for other
+    ways of specifying colors.
 
-            This keyword is not active if *X* and *Y* are specified in
-            the call to contour.
+    By default (value *None*), the colormap specified by *cmap* will be used.
 
-          *extent*: [ *None* | (x0,x1,y0,y1) ]
+alpha : float, default: 1
+    The alpha blending value, between 0 (transparent) and 1 (opaque).
 
-            If *origin* is not *None*, then *extent* is interpreted as
-            in :func:`matplotlib.pyplot.imshow`: it gives the outer
-            pixel boundaries. In this case, the position of Z[0,0]
-            is the center of the pixel, not a corner. If *origin* is
-            *None*, then (*x0*, *y0*) is the position of Z[0,0], and
-            (*x1*, *y1*) is the position of Z[-1,-1].
+cmap : str or `.Colormap`, default: :rc:`image.cmap`
+    A `.Colormap` instance or registered colormap name. The colormap maps the
+    level values to colors.
 
-            This keyword is not active if *X* and *Y* are specified in
-            the call to contour.
+    If both *colors* and *cmap* are given, an error is raised.
 
-          *locator*: [ *None* | ticker.Locator subclass ]
-            If *locator* is None, the default
-            :class:`~matplotlib.ticker.MaxNLocator` is used. The
-            locator is used to determine the contour levels if they
-            are not given explicitly via the *V* argument.
+norm : `~matplotlib.colors.Normalize`, optional
+    If a colormap is used, the `.Normalize` instance scales the level values to
+    the canonical colormap range [0, 1] for mapping to colors. If not given,
+    the default linear scaling is used.
 
-          *extend*: [ 'neither' | 'both' | 'min' | 'max' ]
-            Unless this is 'neither', contour levels are automatically
-            added to one or both ends of the range so that all data
-            are included. These added ranges are then mapped to the
-            special colormap values which default to the ends of the
-            colormap range, but can be set via
-            :meth:`matplotlib.colors.Colormap.set_under` and
-            :meth:`matplotlib.colors.Colormap.set_over` methods.
+origin : {*None*, 'upper', 'lower', 'image'}, default: None
+    Determines the orientation and exact position of *Z* by specifying the
+    position of ``Z[0, 0]``.  This is only relevant, if *X*, *Y* are not given.
 
-          *xunits*, *yunits*: [ *None* | registered units ]
-            Override axis units by specifying an instance of a
-            :class:`matplotlib.units.ConversionInterface`.
+    - *None*: ``Z[0, 0]`` is at X=0, Y=0 in the lower left corner.
+    - 'lower': ``Z[0, 0]`` is at X=0.5, Y=0.5 in the lower left corner.
+    - 'upper': ``Z[0, 0]`` is at X=N+0.5, Y=0.5 in the upper left corner.
+    - 'image': Use the value from :rc:`image.origin`.
 
+extent : (x0, x1, y0, y1), optional
+    If *origin* is not *None*, then *extent* is interpreted as in `.imshow`: it
+    gives the outer pixel boundaries. In this case, the position of Z[0, 0] is
+    the center of the pixel, not a corner. If *origin* is *None*, then
+    (*x0*, *y0*) is the position of Z[0, 0], and (*x1*, *y1*) is the position
+    of Z[-1, -1].
 
-        tricontour-only keyword arguments:
+    This argument is ignored if *X* and *Y* are specified in the call to
+    contour.
 
-          *linewidths*: [ *None* | number | tuple of numbers ]
-            If *linewidths* is *None*, the default width in
-            ``lines.linewidth`` in ``matplotlibrc`` is used.
+locator : ticker.Locator subclass, optional
+    The locator is used to determine the contour levels if they are not given
+    explicitly via *levels*.
+    Defaults to `~.ticker.MaxNLocator`.
 
-            If a number, all levels will be plotted with this linewidth.
+extend : {'neither', 'both', 'min', 'max'}, default: 'neither'
+    Determines the ``%(func)s``-coloring of values that are outside the
+    *levels* range.
 
-            If a tuple, different levels will be plotted with different
-            linewidths in the order specified
+    If 'neither', values outside the *levels* range are not colored.  If 'min',
+    'max' or 'both', color the values below, above or below and above the
+    *levels* range.
 
-          *linestyles*: [ *None* | 'solid' | 'dashed' | 'dashdot' | 'dotted' ]
-            If *linestyles* is *None*, the 'solid' is used.
+    Values below ``min(levels)`` and above ``max(levels)`` are mapped to the
+    under/over values of the `.Colormap`. Note that most colormaps do not have
+    dedicated colors for these by default, so that the over and under values
+    are the edge values of the colormap.  You may want to set these values
+    explicitly using `.Colormap.set_under` and `.Colormap.set_over`.
 
-            *linestyles* can also be an iterable of the above strings
-            specifying a set of linestyles to be used. If this
-            iterable is shorter than the number of contour levels
-            it will be repeated as necessary.
+    .. note::
 
-            If contour is using a monochrome colormap and the contour
-            level is less than 0, then the linestyle specified
-            in ``contour.negative_linestyle`` in ``matplotlibrc``
-            will be used.
+        An existing `.TriContourSet` does not get notified if properties of its
+        colormap are changed. Therefore, an explicit call to
+        `.ContourSet.changed()` is needed after modifying the colormap. The
+        explicit call can be left out, if a colorbar is assigned to the
+        `.TriContourSet` because it internally calls `.ContourSet.changed()`.
 
-        tricontourf-only keyword arguments:
-
-          *antialiased*: [ *True* | *False* ]
-            enable antialiasing
-
-        Note: tricontourf fills intervals that are closed at the top; that
-        is, for boundaries *z1* and *z2*, the filled region is::
-
-            z1 < z <= z2
-
-        There is one exception: if the lowest boundary coincides with
-        the minimum value of the *z* array, then that minimum value
-        will be included in the lowest interval.
-
-        **Examples:**
-
-        .. plot:: mpl_examples/pylab_examples/tricontour_demo.py
-        """
+xunits, yunits : registered units, optional
+    Override axis units by specifying an instance of a
+    :class:`matplotlib.units.ConversionInterface`.""")
 
 
+@docstring.Substitution(func='tricontour', type='lines')
+@docstring.dedent_interpd
 def tricontour(ax, *args, **kwargs):
-    if not ax._hold:
-        ax.cla()
+    """
+    %(_tricontour_doc)s
+
+    linewidths : float or array-like, default: :rc:`contour.linewidth`
+        The line width of the contour lines.
+
+        If a number, all levels will be plotted with this linewidth.
+
+        If a sequence, the levels in ascending order will be plotted with
+        the linewidths in the order specified.
+
+        If None, this falls back to :rc:`lines.linewidth`.
+
+    linestyles : {*None*, 'solid', 'dashed', 'dashdot', 'dotted'}, optional
+        If *linestyles* is *None*, the default is 'solid' unless the lines are
+        monochrome.  In that case, negative contours will take their linestyle
+        from :rc:`contour.negative_linestyle` setting.
+
+        *linestyles* can also be an iterable of the above strings specifying a
+        set of linestyles to be used. If this iterable is shorter than the
+        number of contour levels it will be repeated as necessary.
+    """
     kwargs['filled'] = False
     return TriContourSet(ax, *args, **kwargs)
-tricontour.__doc__ = TriContourSet.tricontour_doc
 
 
+@docstring.Substitution(func='tricontourf', type='regions')
+@docstring.dedent_interpd
 def tricontourf(ax, *args, **kwargs):
-    if not ax._hold:
-        ax.cla()
+    """
+    %(_tricontour_doc)s
+
+    antialiased : bool, default: True
+        Whether to use antialiasing.
+
+    Notes
+    -----
+    `.tricontourf` fills intervals that are closed at the top; that is, for
+    boundaries *z1* and *z2*, the filled region is::
+
+        z1 < Z <= z2
+
+    except for the lowest interval, which is closed on both sides (i.e. it
+    includes the lowest value).
+    """
     kwargs['filled'] = True
     return TriContourSet(ax, *args, **kwargs)
-tricontourf.__doc__ = TriContourSet.tricontour_doc

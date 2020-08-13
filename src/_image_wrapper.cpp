@@ -1,12 +1,8 @@
 #include "mplutils.h"
 #include "_image_resample.h"
 #include "_image.h"
+#include "numpy_cpp.h"
 #include "py_converters.h"
-
-
-#ifndef NPY_1_7_API_VERSION
-#define NPY_ARRAY_C_CONTIGUOUS NPY_C_CONTIGUOUS
-#endif
 
 
 /**********************************************************************
@@ -14,7 +10,7 @@
  * */
 
 const char* image_resample__doc__ =
-"resample(input_array, output_array, matrix, interpolation=NEAREST, alpha=1.0, norm=0, radius=1)\n\n"
+"resample(input_array, output_array, matrix, interpolation=NEAREST, alpha=1.0, norm=False, radius=1)\n\n"
 
 "Resample input_array, blending it in-place into output_array, using an\n"
 "affine transformation.\n\n"
@@ -48,8 +44,8 @@ const char* image_resample__doc__ =
 "    The level of transparency to apply.  1.0 is completely opaque.\n"
 "    0.0 is completely transparent.\n\n"
 
-"norm : float, optional\n"
-"    The norm for the interpolation function.  Default is 0.\n\n"
+"norm : bool, optional\n"
+"    Whether to norm the interpolation function.  Default is `False`.\n\n"
 
 "radius: float, optional\n"
 "    The radius of the kernel, if method is SINC, LANCZOS or BLACKMAN.\n"
@@ -71,8 +67,7 @@ _get_transform_mesh(PyObject *py_affine, npy_intp *dims)
     out_dims[0] = dims[0] * dims[1];
     out_dims[1] = 2;
 
-    py_inverse = PyObject_CallMethod(
-        py_affine, (char *)"inverted", (char *)"", NULL);
+    py_inverse = PyObject_CallMethod(py_affine, "inverted", NULL);
     if (py_inverse == NULL) {
         return NULL;
     }
@@ -87,10 +82,8 @@ _get_transform_mesh(PyObject *py_affine, npy_intp *dims)
         }
     }
 
-    PyObject *output_mesh =
-        PyObject_CallMethod(
-            py_inverse, (char *)"transform", (char *)"O",
-            (char *)input_mesh.pyobj(), NULL);
+    PyObject *output_mesh = PyObject_CallMethod(
+        py_inverse, "transform", "O", input_mesh.pyobj_steal());
 
     Py_DECREF(py_inverse);
 
@@ -119,23 +112,27 @@ image_resample(PyObject *self, PyObject* args, PyObject *kwargs)
     PyObject *py_output_array = NULL;
     PyObject *py_transform = NULL;
     resample_params_t params;
-    int resample_;
 
     PyArrayObject *input_array = NULL;
     PyArrayObject *output_array = NULL;
     PyArrayObject *transform_mesh_array = NULL;
 
+    params.interpolation = NEAREST;
     params.transform_mesh = NULL;
+    params.resample = false;
+    params.norm = false;
+    params.radius = 1.0;
+    params.alpha = 1.0;
 
     const char *kwlist[] = {
         "input_array", "output_array", "transform", "interpolation",
         "resample", "alpha", "norm", "radius", NULL };
 
     if (!PyArg_ParseTupleAndKeywords(
-            args, kwargs, "OOO|iiddd:resample", (char **)kwlist,
+            args, kwargs, "OOO|iO&dO&d:resample", (char **)kwlist,
             &py_input_array, &py_output_array, &py_transform,
-            &params.interpolation, &resample_, &params.alpha, &params.norm,
-            &params.radius)) {
+            &params.interpolation, &convert_bool, &params.resample,
+            &params.alpha, &convert_bool, &params.norm, &params.radius)) {
         return NULL;
     }
 
@@ -145,17 +142,24 @@ image_resample(PyObject *self, PyObject* args, PyObject *kwargs)
         goto error;
     }
 
-    params.resample = (resample_ != 0);
-
     input_array = (PyArrayObject *)PyArray_FromAny(
         py_input_array, NULL, 2, 3, NPY_ARRAY_C_CONTIGUOUS, NULL);
     if (input_array == NULL) {
         goto error;
     }
 
-    output_array = (PyArrayObject *)PyArray_FromAny(
-        py_output_array, NULL, 2, 3, NPY_ARRAY_C_CONTIGUOUS, NULL);
-    if (output_array == NULL) {
+    if (!PyArray_Check(py_output_array)) {
+        PyErr_SetString(PyExc_ValueError, "output array must be a NumPy array");
+        goto error;
+    }
+    output_array = (PyArrayObject *)py_output_array;
+    if (!PyArray_IS_C_CONTIGUOUS(output_array)) {
+        PyErr_SetString(PyExc_ValueError, "output array must be C-contiguous");
+        goto error;
+    }
+    if (PyArray_NDIM(output_array) < 2 || PyArray_NDIM(output_array) > 3) {
+        PyErr_SetString(PyExc_ValueError,
+                        "output array must be 2- or 3-dimensional");
         goto error;
     }
 
@@ -273,7 +277,7 @@ image_resample(PyObject *self, PyObject* args, PyObject *kwargs)
         } else {
             PyErr_Format(
                 PyExc_ValueError,
-                "If 3-dimensional, array must be RGBA.  Got %d planes.",
+                "If 3-dimensional, array must be RGBA.  Got %" NPY_INTP_FMT " planes.",
                 PyArray_DIM(input_array, 2));
             goto error;
         }
@@ -337,11 +341,10 @@ image_resample(PyObject *self, PyObject* args, PyObject *kwargs)
 
     Py_DECREF(input_array);
     Py_XDECREF(transform_mesh_array);
-    return (PyObject *)output_array;
+    Py_RETURN_NONE;
 
  error:
     Py_XDECREF(input_array);
-    Py_XDECREF(output_array);
     Py_XDECREF(transform_mesh_array);
     return NULL;
 }
@@ -360,13 +363,12 @@ static PyObject *image_pcolor(PyObject *self, PyObject *args, PyObject *kwds)
     numpy::array_view<const float, 1> x;
     numpy::array_view<const float, 1> y;
     numpy::array_view<const agg::int8u, 3> d;
-    unsigned int rows;
-    unsigned int cols;
+    npy_intp rows, cols;
     float bounds[4];
     int interpolation;
 
     if (!PyArg_ParseTuple(args,
-                          "O&O&O&II(ffff)i:pcolor",
+                          "O&O&O&nn(ffff)i:pcolor",
                           &x.converter,
                           &x,
                           &y.converter,
@@ -404,16 +406,15 @@ static PyObject *image_pcolor2(PyObject *self, PyObject *args, PyObject *kwds)
     numpy::array_view<const double, 1> x;
     numpy::array_view<const double, 1> y;
     numpy::array_view<const agg::int8u, 3> d;
-    unsigned int rows;
-    unsigned int cols;
+    npy_intp rows, cols;
     float bounds[4];
     numpy::array_view<const agg::int8u, 1> bg;
 
     if (!PyArg_ParseTuple(args,
-                          "O&O&O&II(ffff)O&:pcolor2",
-                          &x.converter,
+                          "O&O&O&nn(ffff)O&:pcolor2",
+                          &x.converter_contiguous,
                           &x,
-                          &y.converter,
+                          &y.converter_contiguous,
                           &y,
                           &d.converter_contiguous,
                           &d,
@@ -443,9 +444,6 @@ static PyMethodDef module_functions[] = {
     {NULL}
 };
 
-extern "C" {
-
-#if PY3K
 static struct PyModuleDef moduledef = {
     PyModuleDef_HEAD_INIT,
     "_image",
@@ -458,27 +456,16 @@ static struct PyModuleDef moduledef = {
     NULL
 };
 
-#define INITERROR return NULL
+#pragma GCC visibility push(default)
 
 PyMODINIT_FUNC PyInit__image(void)
-
-#else
-#define INITERROR return
-
-PyMODINIT_FUNC init_image(void)
-#endif
-
 {
     PyObject *m;
 
-#if PY3K
     m = PyModule_Create(&moduledef);
-#else
-    m = Py_InitModule3("_image", module_functions, NULL);
-#endif
 
     if (m == NULL) {
-        INITERROR;
+        return NULL;
     }
 
     if (PyModule_AddIntConstant(m, "NEAREST", NEAREST) ||
@@ -499,14 +486,12 @@ PyMODINIT_FUNC init_image(void)
         PyModule_AddIntConstant(m, "LANCZOS", LANCZOS) ||
         PyModule_AddIntConstant(m, "BLACKMAN", BLACKMAN) ||
         PyModule_AddIntConstant(m, "_n_interpolation", _n_interpolation)) {
-        INITERROR;
+        return NULL;
     }
 
     import_array();
 
-#if PY3K
     return m;
-#endif
 }
 
-} // extern "C"
+#pragma GCC visibility pop

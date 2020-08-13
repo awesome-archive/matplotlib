@@ -3,7 +3,7 @@
 Overview
 ========
 
-.. htmlonly::
+.. only:: html
 
     :Release: |version|
     :Date: |today|
@@ -14,18 +14,15 @@ Overview
 .. toctree::
    :maxdepth: 2
 
-   style_changes.rst
    users/index.rst
    faq/index.rst
+   api/index.rst
    resources/index.rst
    thirdpartypackages/index.rst
    devel/index.rst
-   mpl_toolkits/index.rst
-   api/index.rst
-   examples/index.rst
    glossary/index.rst
 
-.. htmlonly::
+.. only:: html
 
   * :ref:`genindex`
   * :ref:`modindex`

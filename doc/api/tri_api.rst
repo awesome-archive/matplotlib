@@ -1,13 +1,14 @@
-****************
-triangular grids
-****************
+******************
+``matplotlib.tri``
+******************
 
-:mod:`matplotlib.tri`
-=====================
 .. automodule:: matplotlib.tri
 
 .. autoclass:: matplotlib.tri.Triangulation
     :members:
+
+.. autoclass:: matplotlib.tri.TriContourSet
+    :show-inheritance:
 
 .. autoclass:: matplotlib.tri.TriFinder
 

@@ -1,82 +1,13 @@
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-
-try:
-    # mock in python 3.3+
-    from unittest import mock
-except ImportError:
-    import mock
-
 import matplotlib.widgets as widgets
 import matplotlib.pyplot as plt
-from matplotlib.testing.decorators import cleanup
+from matplotlib.testing.decorators import image_comparison
+from matplotlib.testing.widgets import do_event, get_ax
 
 from numpy.testing import assert_allclose
 
-
-def get_ax():
-    fig, ax = plt.subplots(1, 1)
-    ax.plot([0, 200], [0, 200])
-    ax.set_aspect(1.0)
-    ax.figure.canvas.draw()
-    return ax
+import pytest
 
 
-def do_event(tool, etype, button=1, xdata=0, ydata=0, key=None, step=1):
-    """
-     *name*
-        the event name
-
-    *canvas*
-        the FigureCanvas instance generating the event
-
-    *guiEvent*
-        the GUI event that triggered the matplotlib event
-
-    *x*
-        x position - pixels from left of canvas
-
-    *y*
-        y position - pixels from bottom of canvas
-
-    *inaxes*
-        the :class:`~matplotlib.axes.Axes` instance if mouse is over axes
-
-    *xdata*
-        x coord of mouse in data coords
-
-    *ydata*
-        y coord of mouse in data coords
-
-     *button*
-        button pressed None, 1, 2, 3, 'up', 'down' (up and down are used
-        for scroll events)
-
-    *key*
-        the key depressed when the mouse event triggered (see
-        :class:`KeyEvent`)
-
-    *step*
-        number of scroll steps (positive for 'up', negative for 'down')
-    """
-    event = mock.Mock()
-    event.button = button
-    ax = tool.ax
-    event.x, event.y = ax.transData.transform([(xdata, ydata),
-                                               (xdata, ydata)])[00]
-    event.xdata, event.ydata = xdata, ydata
-    event.inaxes = ax
-    event.canvas = ax.figure.canvas
-    event.key = key
-    event.step = step
-    event.guiEvent = None
-    event.name = 'Custom'
-
-    func = getattr(tool, etype)
-    func(event)
-
-
-@cleanup
 def check_rectangle(**kwargs):
     ax = get_ax()
 
@@ -96,8 +27,9 @@ def check_rectangle(**kwargs):
 
     if kwargs.get('drawtype', None) not in ['line', 'none']:
         assert_allclose(tool.geometry,
-            [[100., 100, 199, 199, 100], [100, 199, 199, 100, 100]],
-            err_msg=tool.geometry)
+                        [[100., 100, 199, 199, 100],
+                         [100, 199, 199, 100, 100]],
+                        err_msg=tool.geometry)
 
     assert ax._got_onselect
 
@@ -111,7 +43,6 @@ def test_rectangle_selector():
     check_rectangle(rectprops=dict(fill=True))
 
 
-@cleanup
 def test_ellipse():
     """For ellipse, test out the key modifiers"""
     ax = get_ax()
@@ -125,48 +56,48 @@ def test_ellipse():
 
     # drag the rectangle
     do_event(tool, 'press', xdata=10, ydata=10, button=1,
-                    key=' ')
+             key=' ')
+
     do_event(tool, 'onmove', xdata=30, ydata=30, button=1)
     do_event(tool, 'release', xdata=30, ydata=30, button=1)
-    assert tool.extents == (120, 170, 120, 170), tool.extents
+    assert tool.extents == (120, 170, 120, 170)
 
     # create from center
     do_event(tool, 'on_key_press', xdata=100, ydata=100, button=1,
-                    key='control')
+             key='control')
     do_event(tool, 'press', xdata=100, ydata=100, button=1)
     do_event(tool, 'onmove', xdata=125, ydata=125, button=1)
     do_event(tool, 'release', xdata=125, ydata=125, button=1)
     do_event(tool, 'on_key_release', xdata=100, ydata=100, button=1,
-                    key='control')
-    assert tool.extents == (75, 125, 75, 125), tool.extents
+             key='control')
+    assert tool.extents == (75, 125, 75, 125)
 
     # create a square
     do_event(tool, 'on_key_press', xdata=10, ydata=10, button=1,
-                    key='shift')
+             key='shift')
     do_event(tool, 'press', xdata=10, ydata=10, button=1)
     do_event(tool, 'onmove', xdata=35, ydata=30, button=1)
     do_event(tool, 'release', xdata=35, ydata=30, button=1)
     do_event(tool, 'on_key_release', xdata=10, ydata=10, button=1,
-                    key='shift')
+             key='shift')
     extents = [int(e) for e in tool.extents]
     assert extents == [10, 35, 10, 34]
 
     # create a square from center
     do_event(tool, 'on_key_press', xdata=100, ydata=100, button=1,
-                      key='ctrl+shift')
+             key='ctrl+shift')
     do_event(tool, 'press', xdata=100, ydata=100, button=1)
     do_event(tool, 'onmove', xdata=125, ydata=130, button=1)
     do_event(tool, 'release', xdata=125, ydata=130, button=1)
     do_event(tool, 'on_key_release', xdata=100, ydata=100, button=1,
-                      key='ctrl+shift')
+             key='ctrl+shift')
     extents = [int(e) for e in tool.extents]
-    assert extents == [70, 129, 70, 130], extents
+    assert extents == [70, 129, 70, 130]
 
     assert tool.geometry.shape == (2, 73)
     assert_allclose(tool.geometry[:, 0], [70., 100])
 
 
-@cleanup
 def test_rectangle_handles():
     ax = get_ax()
 
@@ -203,7 +134,6 @@ def test_rectangle_handles():
     assert tool.extents == (10, 100, 10, 100)
 
 
-@cleanup
 def check_span(*args, **kwargs):
     ax = get_ax()
 
@@ -237,7 +167,6 @@ def test_span_selector():
     check_span('horizontal', rectprops=dict(fill=True))
 
 
-@cleanup
 def check_lasso_selector(**kwargs):
     ax = get_ax()
 
@@ -259,7 +188,6 @@ def test_lasso_selector():
     check_lasso_selector(useblit=True, button=1)
 
 
-@cleanup
 def test_CheckButtons():
     ax = get_ax()
     check = widgets.CheckButtons(ax, ('a', 'b', 'c'), (True, False, True))
@@ -267,7 +195,221 @@ def test_CheckButtons():
     check.set_active(0)
     assert check.get_status() == [False, False, True]
 
-    def clicked_function():
-        pass
-    cid = check.on_clicked(clicked_function)
+    cid = check.on_clicked(lambda: None)
     check.disconnect(cid)
+
+
+@image_comparison(['check_radio_buttons.png'], style='mpl20', remove_text=True)
+def test_check_radio_buttons_image():
+    # Remove this line when this test image is regenerated.
+    plt.rcParams['text.kerning_factor'] = 6
+
+    get_ax()
+    plt.subplots_adjust(left=0.3)
+    rax1 = plt.axes([0.05, 0.7, 0.15, 0.15])
+    rax2 = plt.axes([0.05, 0.2, 0.15, 0.15])
+    widgets.RadioButtons(rax1, ('Radio 1', 'Radio 2', 'Radio 3'))
+    widgets.CheckButtons(rax2, ('Check 1', 'Check 2', 'Check 3'),
+                         (False, True, True))
+
+
+@image_comparison(['check_bunch_of_radio_buttons.png'],
+                  style='mpl20', remove_text=True)
+def test_check_bunch_of_radio_buttons():
+    rax = plt.axes([0.05, 0.1, 0.15, 0.7])
+    widgets.RadioButtons(rax, ('B1', 'B2', 'B3', 'B4', 'B5', 'B6',
+                               'B7', 'B8', 'B9', 'B10', 'B11', 'B12',
+                               'B13', 'B14', 'B15'))
+
+
+def test_slider_slidermin_slidermax_invalid():
+    fig, ax = plt.subplots()
+    # test min/max with floats
+    with pytest.raises(ValueError):
+        widgets.Slider(ax=ax, label='', valmin=0.0, valmax=24.0,
+                       slidermin=10.0)
+    with pytest.raises(ValueError):
+        widgets.Slider(ax=ax, label='', valmin=0.0, valmax=24.0,
+                       slidermax=10.0)
+
+
+def test_slider_slidermin_slidermax():
+    fig, ax = plt.subplots()
+    slider_ = widgets.Slider(ax=ax, label='', valmin=0.0, valmax=24.0,
+                             valinit=5.0)
+
+    slider = widgets.Slider(ax=ax, label='', valmin=0.0, valmax=24.0,
+                            valinit=1.0, slidermin=slider_)
+    assert slider.val == slider_.val
+
+    slider = widgets.Slider(ax=ax, label='', valmin=0.0, valmax=24.0,
+                            valinit=10.0, slidermax=slider_)
+    assert slider.val == slider_.val
+
+
+def test_slider_valmin_valmax():
+    fig, ax = plt.subplots()
+    slider = widgets.Slider(ax=ax, label='', valmin=0.0, valmax=24.0,
+                            valinit=-10.0)
+    assert slider.val == slider.valmin
+
+    slider = widgets.Slider(ax=ax, label='', valmin=0.0, valmax=24.0,
+                            valinit=25.0)
+    assert slider.val == slider.valmax
+
+
+def test_slider_horizontal_vertical():
+    fig, ax = plt.subplots()
+    slider = widgets.Slider(ax=ax, label='', valmin=0, valmax=24,
+                            valinit=12, orientation='horizontal')
+    slider.set_val(10)
+    assert slider.val == 10
+    # check the dimension of the slider patch in axes units
+    box = slider.poly.get_extents().transformed(ax.transAxes.inverted())
+    assert_allclose(box.bounds, [0, 0, 10/24, 1])
+
+    fig, ax = plt.subplots()
+    slider = widgets.Slider(ax=ax, label='', valmin=0, valmax=24,
+                            valinit=12, orientation='vertical')
+    slider.set_val(10)
+    assert slider.val == 10
+    # check the dimension of the slider patch in axes units
+    box = slider.poly.get_extents().transformed(ax.transAxes.inverted())
+    assert_allclose(box.bounds, [0, 0, 1, 10/24])
+
+
+def check_polygon_selector(event_sequence, expected_result, selections_count):
+    """
+    Helper function to test Polygon Selector.
+
+    Parameters
+    ----------
+    event_sequence : list of tuples (etype, dict())
+        A sequence of events to perform. The sequence is a list of tuples
+        where the first element of the tuple is an etype (e.g., 'onmove',
+        'press', etc.), and the second element of the tuple is a dictionary of
+         the arguments for the event (e.g., xdata=5, key='shift', etc.).
+    expected_result : list of vertices (xdata, ydata)
+        The list of vertices that are expected to result from the event
+        sequence.
+    selections_count : int
+        Wait for the tool to call its `onselect` function `selections_count`
+        times, before comparing the result to the `expected_result`
+    """
+    ax = get_ax()
+
+    ax._selections_count = 0
+
+    def onselect(vertices):
+        ax._selections_count += 1
+        ax._current_result = vertices
+
+    tool = widgets.PolygonSelector(ax, onselect)
+
+    for (etype, event_args) in event_sequence:
+        do_event(tool, etype, **event_args)
+
+    assert ax._selections_count == selections_count
+    assert ax._current_result == expected_result
+
+
+def polygon_place_vertex(xdata, ydata):
+    return [('onmove', dict(xdata=xdata, ydata=ydata)),
+            ('press', dict(xdata=xdata, ydata=ydata)),
+            ('release', dict(xdata=xdata, ydata=ydata))]
+
+
+def test_polygon_selector():
+    # Simple polygon
+    expected_result = [(50, 50), (150, 50), (50, 150)]
+    event_sequence = (polygon_place_vertex(50, 50)
+                      + polygon_place_vertex(150, 50)
+                      + polygon_place_vertex(50, 150)
+                      + polygon_place_vertex(50, 50))
+    check_polygon_selector(event_sequence, expected_result, 1)
+
+    # Move first vertex before completing the polygon.
+    expected_result = [(75, 50), (150, 50), (50, 150)]
+    event_sequence = (polygon_place_vertex(50, 50)
+                      + polygon_place_vertex(150, 50)
+                      + [('on_key_press', dict(key='control')),
+                         ('onmove', dict(xdata=50, ydata=50)),
+                         ('press', dict(xdata=50, ydata=50)),
+                         ('onmove', dict(xdata=75, ydata=50)),
+                         ('release', dict(xdata=75, ydata=50)),
+                         ('on_key_release', dict(key='control'))]
+                      + polygon_place_vertex(50, 150)
+                      + polygon_place_vertex(75, 50))
+    check_polygon_selector(event_sequence, expected_result, 1)
+
+    # Move first two vertices at once before completing the polygon.
+    expected_result = [(50, 75), (150, 75), (50, 150)]
+    event_sequence = (polygon_place_vertex(50, 50)
+                      + polygon_place_vertex(150, 50)
+                      + [('on_key_press', dict(key='shift')),
+                         ('onmove', dict(xdata=100, ydata=100)),
+                         ('press', dict(xdata=100, ydata=100)),
+                         ('onmove', dict(xdata=100, ydata=125)),
+                         ('release', dict(xdata=100, ydata=125)),
+                         ('on_key_release', dict(key='shift'))]
+                      + polygon_place_vertex(50, 150)
+                      + polygon_place_vertex(50, 75))
+    check_polygon_selector(event_sequence, expected_result, 1)
+
+    # Move first vertex after completing the polygon.
+    expected_result = [(75, 50), (150, 50), (50, 150)]
+    event_sequence = (polygon_place_vertex(50, 50)
+                      + polygon_place_vertex(150, 50)
+                      + polygon_place_vertex(50, 150)
+                      + polygon_place_vertex(50, 50)
+                      + [('onmove', dict(xdata=50, ydata=50)),
+                         ('press', dict(xdata=50, ydata=50)),
+                         ('onmove', dict(xdata=75, ydata=50)),
+                         ('release', dict(xdata=75, ydata=50))])
+    check_polygon_selector(event_sequence, expected_result, 2)
+
+    # Move all vertices after completing the polygon.
+    expected_result = [(75, 75), (175, 75), (75, 175)]
+    event_sequence = (polygon_place_vertex(50, 50)
+                      + polygon_place_vertex(150, 50)
+                      + polygon_place_vertex(50, 150)
+                      + polygon_place_vertex(50, 50)
+                      + [('on_key_press', dict(key='shift')),
+                         ('onmove', dict(xdata=100, ydata=100)),
+                         ('press', dict(xdata=100, ydata=100)),
+                         ('onmove', dict(xdata=125, ydata=125)),
+                         ('release', dict(xdata=125, ydata=125)),
+                         ('on_key_release', dict(key='shift'))])
+    check_polygon_selector(event_sequence, expected_result, 2)
+
+    # Try to move a vertex and move all before placing any vertices.
+    expected_result = [(50, 50), (150, 50), (50, 150)]
+    event_sequence = ([('on_key_press', dict(key='control')),
+                       ('onmove', dict(xdata=100, ydata=100)),
+                       ('press', dict(xdata=100, ydata=100)),
+                       ('onmove', dict(xdata=125, ydata=125)),
+                       ('release', dict(xdata=125, ydata=125)),
+                       ('on_key_release', dict(key='control')),
+                       ('on_key_press', dict(key='shift')),
+                       ('onmove', dict(xdata=100, ydata=100)),
+                       ('press', dict(xdata=100, ydata=100)),
+                       ('onmove', dict(xdata=125, ydata=125)),
+                       ('release', dict(xdata=125, ydata=125)),
+                       ('on_key_release', dict(key='shift'))]
+                      + polygon_place_vertex(50, 50)
+                      + polygon_place_vertex(150, 50)
+                      + polygon_place_vertex(50, 150)
+                      + polygon_place_vertex(50, 50))
+    check_polygon_selector(event_sequence, expected_result, 1)
+
+    # Try to place vertex out-of-bounds, then reset, and start a new polygon.
+    expected_result = [(50, 50), (150, 50), (50, 150)]
+    event_sequence = (polygon_place_vertex(50, 50)
+                      + polygon_place_vertex(250, 50)
+                      + [('on_key_press', dict(key='escape')),
+                         ('on_key_release', dict(key='escape'))]
+                      + polygon_place_vertex(50, 50)
+                      + polygon_place_vertex(150, 50)
+                      + polygon_place_vertex(50, 150)
+                      + polygon_place_vertex(50, 50))
+    check_polygon_selector(event_sequence, expected_result, 1)

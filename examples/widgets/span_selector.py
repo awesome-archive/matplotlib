@@ -1,4 +1,8 @@
 """
+=============
+Span Selector
+=============
+
 The SpanSelector is a mouse widget to select a xmin/xmax range and plot the
 detail view of the selected region in the lower axes
 """
@@ -6,17 +10,20 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import SpanSelector
 
-fig = plt.figure(figsize=(8, 6))
-ax = fig.add_subplot(211, facecolor='#FFFFCC')
+# Fixing random state for reproducibility
+np.random.seed(19680801)
+
+fig, (ax1, ax2) = plt.subplots(2, figsize=(8, 6))
+ax1.set(facecolor='#FFFFCC')
 
 x = np.arange(0.0, 5.0, 0.01)
 y = np.sin(2*np.pi*x) + 0.5*np.random.randn(len(x))
 
-ax.plot(x, y, '-')
-ax.set_ylim(-2, 2)
-ax.set_title('Press left mouse button and drag to test')
+ax1.plot(x, y, '-')
+ax1.set_ylim(-2, 2)
+ax1.set_title('Press left mouse button and drag to test')
 
-ax2 = fig.add_subplot(212, axisbg='#FFFFCC')
+ax2.set(facecolor='#FFFFCC')
 line2, = ax2.plot(x, y, '-')
 
 
@@ -31,9 +38,17 @@ def onselect(xmin, xmax):
     ax2.set_ylim(thisy.min(), thisy.max())
     fig.canvas.draw()
 
-# set useblit True on gtkagg for enhanced performance
-span = SpanSelector(ax, onselect, 'horizontal', useblit=True,
+#############################################################################
+# .. note::
+#
+#    If the SpanSelector object is garbage collected you will lose the
+#    interactivity.  You must keep a hard reference to it to prevent this.
+#
+
+
+span = SpanSelector(ax1, onselect, 'horizontal', useblit=True,
                     rectprops=dict(alpha=0.5, facecolor='red'))
+# Set useblit=True on most backends for enhanced performance.
 
 
 plt.show()

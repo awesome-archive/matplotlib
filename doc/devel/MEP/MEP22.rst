@@ -58,7 +58,7 @@ the shortcuts out of the `Canvas`.  This actions and shortcuts will be
 in the form of `Tools`.
 
 A new class `Navigation` will be the bridge between the events from
-the `Canvas` and `Toolbar` and redirect them to the appropiate `Tool`.
+the `Canvas` and `Toolbar` and redirect them to the appropriate `Tool`.
 
 At the end the user interaction will be divided into three classes:
 
@@ -77,7 +77,7 @@ ToolBase(object)
 
 Tools can have a graphical representation as the `SubplotTool` or not even be present in the Toolbar as `Quit`
 
-The `ToolBase` has the following class attributes for configuration at definition time
+The `.ToolBase` has the following class attributes for configuration at definition time
 
  * keymap = None: Key(s) to be used to trigger the tool
  * description = '': Small description of the tool
@@ -113,7 +113,7 @@ The following instance attributes are set at instantiation:
 ToolToggleBase(ToolBase)
 ------------------------
 
-The `ToolToggleBase` has the following class attributes for
+The `.ToolToggleBase` has the following class attributes for
 configuration at definition time
 
  * radio_group = None: Attribute to group 'radio' like tools (mutually
@@ -124,7 +124,7 @@ The **Toggleable** Tools, can capture keypress, mouse moves, and mouse
 button press
 
 It defines the following methods
- * enable(self, event): Called by `ToolToggleBase.trigger` method
+ * enable(self, event): Called by `.ToolToggleBase.trigger` method
  * disable(self, event): Called when the tool is untoggled
  * toggled : **Property** True or False
 
@@ -170,7 +170,7 @@ ToolbarBase
 Methods for **Backend implementation**
  * add_toolitem(self, name, group, position, image, description,
    toggle): Add a toolitem to the toolbar. This method is a callback
-   from `tool_added_event` (emited by navigation)
+   from `tool_added_event` (emitted by navigation)
  * set_message(self, s): Display a message on toolbar or in status bar
  * toggle_toolitem(self, name): Toggle the toolitem without firing
    event.
@@ -180,8 +180,8 @@ Methods for **Backend implementation**
 Backward compatibility
 ======================
 
-For backward compatibility added a 'navigation' key to
-`rcsetup.validate_toolbar`, that is used for Navigation classes
+For backward compatibility added 'navigation' to the list of values
+supported by :rc:`toolbar`, that is used for Navigation classes
 instantiation instead of the NavigationToolbar classes
 
 With this parameter, it makes it transparent to anyone using the

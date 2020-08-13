@@ -1,3 +1,9 @@
+"""
+================
+Parasite Simple2
+================
+
+"""
 import matplotlib.transforms as mtransforms
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1.parasite_axes import SubplotHost
@@ -38,5 +44,4 @@ ax_kms.set_xlim(950, 3700)
 ax_kms.set_ylim(950, 3100)
 # xlim and ylim of ax_pms will be automatically adjusted.
 
-plt.draw()
 plt.show()

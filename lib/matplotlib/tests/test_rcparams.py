@@ -1,67 +1,72 @@
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-
-import six
-
-import io
+from collections import OrderedDict
+import copy
 import os
+from pathlib import Path
+import subprocess
 import sys
-import warnings
+from unittest import mock
 
 from cycler import cycler, Cycler
+import pytest
 
 import matplotlib as mpl
+from matplotlib import cbook
 import matplotlib.pyplot as plt
-from matplotlib.tests import assert_str_equal
-from matplotlib.testing.decorators import cleanup, knownfailureif
 import matplotlib.colors as mcolors
-from nose.tools import assert_true, assert_raises, assert_equal
-from nose.plugins.skip import SkipTest
-import nose
-from itertools import chain
 import numpy as np
-from matplotlib.rcsetup import (validate_bool_maybe_none,
-                                validate_stringlist,
-                                validate_colorlist,
-                                validate_bool,
-                                validate_nseq_int,
-                                validate_nseq_float,
-                                validate_cycler,
-                                validate_hatch,
-                                validate_hist_bins)
+from matplotlib.rcsetup import (
+    validate_bool,
+    validate_bool_maybe_none,
+    validate_color,
+    validate_colorlist,
+    validate_cycler,
+    validate_float,
+    validate_fontweight,
+    validate_hatch,
+    validate_hist_bins,
+    validate_int,
+    validate_markevery,
+    validate_stringlist,
+    _validate_linestyle,
+    _listify_validator)
 
 
-mpl.rc('text', usetex=False)
-mpl.rc('lines', linewidth=22)
+def test_rcparams(tmpdir):
+    mpl.rc('text', usetex=False)
+    mpl.rc('lines', linewidth=22)
 
-fname = os.path.join(os.path.dirname(__file__), 'test_rcparams.rc')
-
-
-def test_rcparams():
     usetex = mpl.rcParams['text.usetex']
     linewidth = mpl.rcParams['lines.linewidth']
+
+    rcpath = Path(tmpdir) / 'test_rcparams.rc'
+    rcpath.write_text('lines.linewidth: 33')
 
     # test context given dictionary
     with mpl.rc_context(rc={'text.usetex': not usetex}):
         assert mpl.rcParams['text.usetex'] == (not usetex)
     assert mpl.rcParams['text.usetex'] == usetex
 
-    # test context given filename (mpl.rc sets linewdith to 33)
-    with mpl.rc_context(fname=fname):
+    # test context given filename (mpl.rc sets linewidth to 33)
+    with mpl.rc_context(fname=rcpath):
         assert mpl.rcParams['lines.linewidth'] == 33
     assert mpl.rcParams['lines.linewidth'] == linewidth
 
     # test context given filename and dictionary
-    with mpl.rc_context(fname=fname, rc={'lines.linewidth': 44}):
+    with mpl.rc_context(fname=rcpath, rc={'lines.linewidth': 44}):
         assert mpl.rcParams['lines.linewidth'] == 44
     assert mpl.rcParams['lines.linewidth'] == linewidth
 
+    # test context as decorator (and test reusability, by calling func twice)
+    @mpl.rc_context({'lines.linewidth': 44})
+    def func():
+        assert mpl.rcParams['lines.linewidth'] == 44
+
+    func()
+    func()
+
     # test rc_file
-    try:
-        mpl.rc_file(fname)
-        assert mpl.rcParams['lines.linewidth'] == 33
-    finally:
-        mpl.rcParams['lines.linewidth'] = linewidth
+    mpl.rc_file(rcpath)
+    assert mpl.rcParams['lines.linewidth'] == 33
 
 
 def test_RcParams_class():
@@ -73,8 +78,7 @@ def test_RcParams_class():
                        'font.weight': 'normal',
                        'font.size': 12})
 
-    if six.PY3:
-        expected_repr = """
+    expected_repr = """
 RcParams({'font.cursive': ['Apple Chancery',
                            'Textile',
                            'Zapf Chancery',
@@ -82,189 +86,143 @@ RcParams({'font.cursive': ['Apple Chancery',
           'font.family': ['sans-serif'],
           'font.size': 12.0,
           'font.weight': 'normal'})""".lstrip()
-    else:
-        expected_repr = """
-RcParams({u'font.cursive': [u'Apple Chancery',
-                            u'Textile',
-                            u'Zapf Chancery',
-                            u'cursive'],
-          u'font.family': [u'sans-serif'],
-          u'font.size': 12.0,
-          u'font.weight': u'normal'})""".lstrip()
 
-    assert_str_equal(expected_repr, repr(rc))
+    assert expected_repr == repr(rc)
 
-    if six.PY3:
-        expected_str = """
+    expected_str = """
 font.cursive: ['Apple Chancery', 'Textile', 'Zapf Chancery', 'cursive']
 font.family: ['sans-serif']
 font.size: 12.0
 font.weight: normal""".lstrip()
-    else:
-        expected_str = """
-font.cursive: [u'Apple Chancery', u'Textile', u'Zapf Chancery', u'cursive']
-font.family: [u'sans-serif']
-font.size: 12.0
-font.weight: normal""".lstrip()
 
-    assert_str_equal(expected_str, str(rc))
+    assert expected_str == str(rc)
 
     # test the find_all functionality
-    assert ['font.cursive', 'font.size'] == sorted(rc.find_all('i[vz]').keys())
-    assert ['font.family'] == list(six.iterkeys(rc.find_all('family')))
+    assert ['font.cursive', 'font.size'] == sorted(rc.find_all('i[vz]'))
+    assert ['font.family'] == list(rc.find_all('family'))
 
 
 def test_rcparams_update():
-    if sys.version_info[:2] < (2, 7):
-        raise nose.SkipTest("assert_raises as context manager "
-                            "not supported with Python < 2.7")
     rc = mpl.RcParams({'figure.figsize': (3.5, 42)})
     bad_dict = {'figure.figsize': (3.5, 42, 1)}
     # make sure validation happens on input
-    with assert_raises(ValueError):
-
-        with warnings.catch_warnings():
-            warnings.filterwarnings('ignore',
-                                message='.*(validate)',
-                                category=UserWarning)
-            rc.update(bad_dict)
+    with pytest.raises(ValueError), \
+         pytest.warns(UserWarning, match="validate"):
+        rc.update(bad_dict)
 
 
 def test_rcparams_init():
-    if sys.version_info[:2] < (2, 7):
-        raise nose.SkipTest("assert_raises as context manager "
-                            "not supported with Python < 2.7")
-    with assert_raises(ValueError):
-        with warnings.catch_warnings():
-            warnings.filterwarnings('ignore',
-                                message='.*(validate)',
-                                category=UserWarning)
-            mpl.RcParams({'figure.figsize': (3.5, 42, 1)})
+    with pytest.raises(ValueError), \
+         pytest.warns(UserWarning, match="validate"):
+        mpl.RcParams({'figure.figsize': (3.5, 42, 1)})
 
 
-@cleanup
 def test_Bug_2543():
     # Test that it possible to add all values to itself / deepcopy
     # This was not possible because validate_bool_maybe_none did not
     # accept None as an argument.
     # https://github.com/matplotlib/matplotlib/issues/2543
     # We filter warnings at this stage since a number of them are raised
-    # for deprecated rcparams as they should. We dont want these in the
+    # for deprecated rcparams as they should. We don't want these in the
     # printed in the test suite.
-    with warnings.catch_warnings():
-        warnings.filterwarnings('ignore',
-                                message='.*(deprecated|obsolete)',
-                                category=UserWarning)
+    with cbook._suppress_matplotlib_deprecation_warning():
         with mpl.rc_context():
             _copy = mpl.rcParams.copy()
-            for key in six.iterkeys(_copy):
+            for key in _copy:
                 mpl.rcParams[key] = _copy[key]
-            mpl.rcParams['text.dvipnghack'] = None
         with mpl.rc_context():
-            from copy import deepcopy
-            _deep_copy = deepcopy(mpl.rcParams)
+            copy.deepcopy(mpl.rcParams)
         # real test is that this does not raise
-        assert_true(validate_bool_maybe_none(None) is None)
-        assert_true(validate_bool_maybe_none("none") is None)
-        _fonttype = mpl.rcParams['svg.fonttype']
-        assert_true(_fonttype == mpl.rcParams['svg.embed_char_paths'])
-        with mpl.rc_context():
-            mpl.rcParams['svg.embed_char_paths'] = False
-            assert_true(mpl.rcParams['svg.fonttype'] == "none")
-
-
-@cleanup
-def test_Bug_2543_newer_python():
-    # only split from above because of the usage of assert_raises
-    # as a context manager, which only works in 2.7 and above
-    if sys.version_info[:2] < (2, 7):
-        raise nose.SkipTest("assert_raises as context manager not supported with Python < 2.7")
-    from matplotlib.rcsetup import validate_bool_maybe_none, validate_bool
-    with assert_raises(ValueError):
-        validate_bool_maybe_none("blah")
-    with assert_raises(ValueError):
+        assert validate_bool_maybe_none(None) is None
+        assert validate_bool_maybe_none("none") is None
+        with pytest.raises(ValueError):
+            validate_bool_maybe_none("blah")
+    with pytest.raises(ValueError):
         validate_bool(None)
-    with assert_raises(ValueError):
+    with pytest.raises(ValueError):
         with mpl.rc_context():
             mpl.rcParams['svg.fonttype'] = True
 
 
-@cleanup
-def _legend_rcparam_helper(param_dict, target, get_func):
+legend_color_tests = [
+    ('face', {'color': 'r'}, mcolors.to_rgba('r')),
+    ('face', {'color': 'inherit', 'axes.facecolor': 'r'},
+     mcolors.to_rgba('r')),
+    ('face', {'color': 'g', 'axes.facecolor': 'r'}, mcolors.to_rgba('g')),
+    ('edge', {'color': 'r'}, mcolors.to_rgba('r')),
+    ('edge', {'color': 'inherit', 'axes.edgecolor': 'r'},
+     mcolors.to_rgba('r')),
+    ('edge', {'color': 'g', 'axes.facecolor': 'r'}, mcolors.to_rgba('g'))
+]
+legend_color_test_ids = [
+    'same facecolor',
+    'inherited facecolor',
+    'different facecolor',
+    'same edgecolor',
+    'inherited edgecolor',
+    'different facecolor',
+]
+
+
+@pytest.mark.parametrize('color_type, param_dict, target', legend_color_tests,
+                         ids=legend_color_test_ids)
+def test_legend_colors(color_type, param_dict, target):
+    param_dict[f'legend.{color_type}color'] = param_dict.pop('color')
+    get_func = f'get_{color_type}color'
+
     with mpl.rc_context(param_dict):
         _, ax = plt.subplots()
         ax.plot(range(3), label='test')
         leg = ax.legend()
-        assert_equal(getattr(leg.legendPatch, get_func)(), target)
+        assert getattr(leg.legendPatch, get_func)() == target
 
 
-def test_legend_facecolor():
-    get_func = 'get_facecolor'
-    rcparam = 'legend.facecolor'
-    test_values = [({rcparam: 'r'},
-                    mcolors.to_rgba('r')),
-                   ({rcparam: 'inherit', 'axes.facecolor': 'r'},
-                    mcolors.to_rgba('r')),
-                   ({rcparam: 'g', 'axes.facecolor': 'r'},
-                    mcolors.to_rgba('g'))]
-    for rc_dict, target in test_values:
-        yield _legend_rcparam_helper, rc_dict, target, get_func
+def test_mfc_rcparams():
+    mpl.rcParams['lines.markerfacecolor'] = 'r'
+    ln = mpl.lines.Line2D([1, 2], [1, 2])
+    assert ln.get_markerfacecolor() == 'r'
 
 
-def test_legend_edgecolor():
-    get_func = 'get_edgecolor'
-    rcparam = 'legend.edgecolor'
-    test_values = [({rcparam: 'r'},
-                    mcolors.to_rgba('r')),
-                   ({rcparam: 'inherit', 'axes.edgecolor': 'r'},
-                    mcolors.to_rgba('r')),
-                   ({rcparam: 'g', 'axes.facecolor': 'r'},
-                    mcolors.to_rgba('g'))]
-    for rc_dict, target in test_values:
-        yield _legend_rcparam_helper, rc_dict, target, get_func
+def test_mec_rcparams():
+    mpl.rcParams['lines.markeredgecolor'] = 'r'
+    ln = mpl.lines.Line2D([1, 2], [1, 2])
+    assert ln.get_markeredgecolor() == 'r'
 
 
-def test_Issue_1713():
-    utf32_be = os.path.join(os.path.dirname(__file__),
-                           'test_utf32_be_rcparams.rc')
-    old_lang = os.environ.get('LANG', None)
-    os.environ['LANG'] = 'en_US.UTF-32-BE'
-    rc = mpl.rc_params_from_file(utf32_be, True)
-    if old_lang:
-        os.environ['LANG'] = old_lang
-    else:
-        del os.environ['LANG']
+def test_axes_titlecolor_rcparams():
+    mpl.rcParams['axes.titlecolor'] = 'r'
+    _, ax = plt.subplots()
+    title = ax.set_title("Title")
+    assert title.get_color() == 'r'
+
+
+def test_Issue_1713(tmpdir):
+    rcpath = Path(tmpdir) / 'test_rcparams.rc'
+    rcpath.write_text('timezone: UTC', encoding='UTF-32-BE')
+    with mock.patch('locale.getpreferredencoding', return_value='UTF-32-BE'):
+        rc = mpl.rc_params_from_file(rcpath, True, False)
     assert rc.get('timezone') == 'UTC'
 
 
-def _validation_test_helper(validator, arg, target):
-    res = validator(arg)
-    if isinstance(target, np.ndarray):
-        assert_true(np.all(res == target))
-    elif not isinstance(target, Cycler):
-        assert_equal(res, target)
-    else:
-        # Cyclers can't simply be asserted equal. They don't implement __eq__
-        assert_equal(list(res), list(target))
+def test_animation_frame_formats():
+    # Animation frame_format should allow any of the following
+    # if any of these are not allowed, an exception will be raised
+    # test for gh issue #17908
+    for fmt in ['png', 'jpeg', 'tiff', 'raw', 'rgba', 'ppm',
+                'sgi', 'bmp', 'pbm', 'svg']:
+        mpl.rcParams['animation.frame_format'] = fmt
 
 
-def _validation_fail_helper(validator, arg, exception_type):
-    if sys.version_info[:2] < (2, 7):
-        raise nose.SkipTest("assert_raises as context manager not "
-                            "supported with Python < 2.7")
-    with assert_raises(exception_type):
-        validator(arg)
-
-
-def test_validators():
+def generate_validator_testcases(valid):
     validation_tests = (
         {'validator': validate_bool,
-         'success': chain(((_, True) for _ in
-                           ('t', 'y', 'yes', 'on', 'true', '1', 1, True)),
-                           ((_, False) for _ in
-                            ('f', 'n', 'no', 'off', 'false', '0', 0, False))),
-        'fail': ((_, ValueError)
-                 for _ in ('aardvark', 2, -1, [], ))},
+         'success': (*((_, True) for _ in
+                       ('t', 'y', 'yes', 'on', 'true', '1', 1, True)),
+                     *((_, False) for _ in
+                       ('f', 'n', 'no', 'off', 'false', '0', 0, False))),
+         'fail': ((_, ValueError)
+                  for _ in ('aardvark', 2, -1, [], ))
+         },
         {'validator': validate_stringlist,
          'success': (('', []),
                      ('a,b', ['a', 'b']),
@@ -277,12 +235,12 @@ def test_validators():
                      (np.array(['a', 'b']), ['a', 'b']),
                      ((1, 2), ['1', '2']),
                      (np.array([1, 2]), ['1', '2']),
-                    ),
-         'fail': ((dict(), ValueError),
+                     ),
+         'fail': ((set(), ValueError),
                   (1, ValueError),
-                 )
-        },
-        {'validator': validate_nseq_int(2),
+                  )
+         },
+        {'validator': _listify_validator(validate_int, n=2),
          'success': ((_, [1, 2])
                      for _ in ('1, 2', [1.5, 2.5], [1, 2],
                                (1, 2), np.array((1, 2)))),
@@ -290,8 +248,8 @@ def test_validators():
                   for _ in ('aardvark', ('a', 1),
                             (1, 2, 3)
                             ))
-        },
-        {'validator': validate_nseq_float(2),
+         },
+        {'validator': _listify_validator(validate_float, n=2),
          'success': ((_, [1.5, 2.5])
                      for _ in ('1.5, 2.5', [1.5, 2.5], [1.5, 2.5],
                                (1.5, 2.5), np.array((1.5, 2.5)))),
@@ -299,7 +257,7 @@ def test_validators():
                   for _ in ('aardvark', ('a', 1),
                             (1, 2, 3)
                             ))
-        },
+         },
         {'validator': validate_cycler,
          'success': (('cycler("color", "rgb")',
                       cycler("color", 'rgb')),
@@ -308,17 +266,17 @@ def test_validators():
                      ("""(cycler("color", ["r", "g", "b"]) +
                           cycler("mew", [2, 3, 5]))""",
                       (cycler("color", 'rgb') +
-                          cycler("markeredgewidth", [2, 3, 5]))),
+                       cycler("markeredgewidth", [2, 3, 5]))),
                      ("cycler(c='rgb', lw=[1, 2, 3])",
                       cycler('color', 'rgb') + cycler('linewidth', [1, 2, 3])),
                      ("cycler('c', 'rgb') * cycler('linestyle', ['-', '--'])",
                       (cycler('color', 'rgb') *
-                          cycler('linestyle', ['-', '--']))),
+                       cycler('linestyle', ['-', '--']))),
                      (cycler('ls', ['-', '--']),
                       cycler('linestyle', ['-', '--'])),
                      (cycler(mew=[2, 5]),
                       cycler('markeredgewidth', [2, 5])),
-                    ),
+                     ),
          # This is *so* incredibly important: validate_cycler() eval's
          # an arbitrary string! I think I have it locked down enough,
          # and that is what this is testing.
@@ -329,42 +287,62 @@ def test_validators():
          'fail': ((4, ValueError),  # Gotta be a string or Cycler object
                   ('cycler("bleh, [])', ValueError),  # syntax error
                   ('Cycler("linewidth", [1, 2, 3])',
-                      ValueError),  # only 'cycler()' function is allowed
+                   ValueError),  # only 'cycler()' function is allowed
                   ('1 + 2', ValueError),  # doesn't produce a Cycler object
                   ('os.system("echo Gotcha")', ValueError),  # os not available
                   ('import os', ValueError),  # should not be able to import
                   ('def badjuju(a): return a; badjuju(cycler("color", "rgb"))',
-                      ValueError),  # Should not be able to define anything
-                                    # even if it does return a cycler
+                   ValueError),  # Should not be able to define anything
+                  # even if it does return a cycler
                   ('cycler("waka", [1, 2, 3])', ValueError),  # not a property
                   ('cycler(c=[1, 2, 3])', ValueError),  # invalid values
                   ("cycler(lw=['a', 'b', 'c'])", ValueError),  # invalid values
                   (cycler('waka', [1, 3, 5]), ValueError),  # not a property
                   (cycler('color', ['C1', 'r', 'g']), ValueError)  # no CN
-                 )
-        },
+                  )
+         },
         {'validator': validate_hatch,
          'success': (('--|', '--|'), ('\\oO', '\\oO'),
                      ('/+*/.x', '/+*/.x'), ('', '')),
          'fail': (('--_', ValueError),
                   (8, ValueError),
                   ('X', ValueError)),
-        },
+         },
         {'validator': validate_colorlist,
          'success': (('r,g,b', ['r', 'g', 'b']),
                      (['r', 'g', 'b'], ['r', 'g', 'b']),
                      ('r, ,', ['r']),
                      (['', 'g', 'blue'], ['g', 'blue']),
                      ([np.array([1, 0, 0]), np.array([0, 1, 0])],
-                         np.array([[1, 0, 0], [0, 1, 0]])),
+                     np.array([[1, 0, 0], [0, 1, 0]])),
                      (np.array([[1, 0, 0], [0, 1, 0]]),
-                         np.array([[1, 0, 0], [0, 1, 0]])),
-                    ),
+                     np.array([[1, 0, 0], [0, 1, 0]])),
+                     ),
          'fail': (('fish', ValueError),
-                 ),
-        },
+                  ),
+         },
+        {'validator': validate_color,
+         'success': (('None', 'none'),
+                     ('none', 'none'),
+                     ('AABBCC', '#AABBCC'),  # RGB hex code
+                     ('AABBCC00', '#AABBCC00'),  # RGBA hex code
+                     ('tab:blue', 'tab:blue'),  # named color
+                     ('C12', 'C12'),  # color from cycle
+                     ('(0, 1, 0)', (0.0, 1.0, 0.0)),  # RGB tuple
+                     ((0, 1, 0), (0, 1, 0)),  # non-string version
+                     ('(0, 1, 0, 1)', (0.0, 1.0, 0.0, 1.0)),  # RGBA tuple
+                     ((0, 1, 0, 1), (0, 1, 0, 1)),  # non-string version
+                     ),
+         'fail': (('tab:veryblue', ValueError),  # invalid name
+                  ('(0, 1)', ValueError),  # tuple with length < 3
+                  ('(0, 1, 0, 1, 0)', ValueError),  # tuple with length > 4
+                  ('(0, 1, none)', ValueError),  # cannot cast none to float
+                  ('(0, 1, "0.5")', ValueError),  # last one not a float
+                  ),
+         },
         {'validator': validate_hist_bins,
          'success': (('auto', 'auto'),
+                     ('fd', 'fd'),
                      ('10', 10),
                      ('1, 2, 3', [1, 2, 3]),
                      ([1, 2, 3], [1, 2, 3]),
@@ -372,44 +350,154 @@ def test_validators():
                      ),
          'fail': (('aardvark', ValueError),
                   )
-         }
+         },
+        {'validator': validate_markevery,
+         'success': ((None, None),
+                     (1, 1),
+                     (0.1, 0.1),
+                     ((1, 1), (1, 1)),
+                     ((0.1, 0.1), (0.1, 0.1)),
+                     ([1, 2, 3], [1, 2, 3]),
+                     (slice(2), slice(None, 2, None)),
+                     (slice(1, 2, 3), slice(1, 2, 3))
+                     ),
+         'fail': (((1, 2, 3), TypeError),
+                  ([1, 2, 0.3], TypeError),
+                  (['a', 2, 3], TypeError),
+                  ([1, 2, 'a'], TypeError),
+                  ((0.1, 0.2, 0.3), TypeError),
+                  ((0.1, 2, 3), TypeError),
+                  ((1, 0.2, 0.3), TypeError),
+                  ((1, 0.1), TypeError),
+                  ((0.1, 1), TypeError),
+                  (('abc'), TypeError),
+                  ((1, 'a'), TypeError),
+                  ((0.1, 'b'), TypeError),
+                  (('a', 1), TypeError),
+                  (('a', 0.1), TypeError),
+                  ('abc', TypeError),
+                  ('a', TypeError),
+                  (object(), TypeError)
+                  )
+         },
+        {'validator': _validate_linestyle,
+         'success': (('-', '-'), ('solid', 'solid'),
+                     ('--', '--'), ('dashed', 'dashed'),
+                     ('-.', '-.'), ('dashdot', 'dashdot'),
+                     (':', ':'), ('dotted', 'dotted'),
+                     ('', ''), (' ', ' '),
+                     ('None', 'none'), ('none', 'none'),
+                     ('DoTtEd', 'dotted'),  # case-insensitive
+                     ('1, 3', (0, (1, 3))),
+                     ([1.23, 456], (0, [1.23, 456.0])),
+                     ([1, 2, 3, 4], (0, [1.0, 2.0, 3.0, 4.0])),
+                     ((0, [1, 2]), (0, [1, 2])),
+                     ((-1, [1, 2]), (-1, [1, 2])),
+                     ),
+         'fail': (('aardvark', ValueError),  # not a valid string
+                  (b'dotted', ValueError),
+                  ('dotted'.encode('utf-16'), ValueError),
+                  ([1, 2, 3], ValueError),  # sequence with odd length
+                  (1.23, ValueError),  # not a sequence
+                  (("a", [1, 2]), ValueError),  # wrong explicit offset
+                  ((1, [1, 2, 3]), ValueError),  # odd length sequence
+                  (([1, 2], 1), ValueError),  # inverted offset/onoff
+                  )
+         },
     )
 
     for validator_dict in validation_tests:
         validator = validator_dict['validator']
-        for arg, target in validator_dict['success']:
-            yield _validation_test_helper, validator, arg, target
-        for arg, error_type in validator_dict['fail']:
-            yield _validation_fail_helper, validator, arg, error_type
+        if valid:
+            for arg, target in validator_dict['success']:
+                yield validator, arg, target
+        else:
+            for arg, error_type in validator_dict['fail']:
+                yield validator, arg, error_type
+
+
+@pytest.mark.parametrize('validator, arg, target',
+                         generate_validator_testcases(True))
+def test_validator_valid(validator, arg, target):
+    res = validator(arg)
+    if isinstance(target, np.ndarray):
+        np.testing.assert_equal(res, target)
+    elif not isinstance(target, Cycler):
+        assert res == target
+    else:
+        # Cyclers can't simply be asserted equal. They don't implement __eq__
+        assert list(res) == list(target)
+
+
+@pytest.mark.parametrize('validator, arg, exception_type',
+                         generate_validator_testcases(False))
+def test_validator_invalid(validator, arg, exception_type):
+    with pytest.raises(exception_type):
+        validator(arg)
+
+
+@pytest.mark.parametrize('weight, parsed_weight', [
+    ('bold', 'bold'),
+    ('BOLD', ValueError),  # weight is case-sensitive
+    (100, 100),
+    ('100', 100),
+    (np.array(100), 100),
+    # fractional fontweights are not defined. This should actually raise a
+    # ValueError, but historically did not.
+    (20.6, 20),
+    ('20.6', ValueError),
+    ([100], ValueError),
+])
+def test_validate_fontweight(weight, parsed_weight):
+    if parsed_weight is ValueError:
+        with pytest.raises(ValueError):
+            validate_fontweight(weight)
+    else:
+        assert validate_fontweight(weight) == parsed_weight
 
 
 def test_keymaps():
     key_list = [k for k in mpl.rcParams if 'keymap' in k]
     for k in key_list:
-        assert(isinstance(mpl.rcParams[k], list))
+        assert isinstance(mpl.rcParams[k], list)
 
 
 def test_rcparams_reset_after_fail():
-
     # There was previously a bug that meant that if rc_context failed and
     # raised an exception due to issues in the supplied rc parameters, the
     # global rc parameters were left in a modified state.
-
-    if sys.version_info[:2] >= (2, 7):
-        from collections import OrderedDict
-    else:
-        raise SkipTest("Test can only be run in Python >= 2.7 as it requires OrderedDict")
-
     with mpl.rc_context(rc={'text.usetex': False}):
-
         assert mpl.rcParams['text.usetex'] is False
-
-        with assert_raises(KeyError):
-            with mpl.rc_context(rc=OrderedDict([('text.usetex', True),('test.blah', True)])):
+        with pytest.raises(KeyError):
+            with mpl.rc_context(rc=OrderedDict([('text.usetex', True),
+                                                ('test.blah', True)])):
                 pass
-
         assert mpl.rcParams['text.usetex'] is False
 
 
-if __name__ == '__main__':
-    nose.runmodule(argv=['-s', '--with-doctest'], exit=False)
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux only")
+def test_backend_fallback_headless(tmpdir):
+    env = {**os.environ,
+           "DISPLAY": "", "MPLBACKEND": "", "MPLCONFIGDIR": str(tmpdir)}
+    with pytest.raises(subprocess.CalledProcessError):
+        subprocess.run(
+            [sys.executable, "-c",
+             ("import matplotlib;" +
+              "matplotlib.use('tkagg');" +
+              "import matplotlib.pyplot")
+             ],
+            env=env, check=True)
+
+
+@pytest.mark.skipif(sys.platform == "linux" and not os.environ.get("DISPLAY"),
+                    reason="headless")
+def test_backend_fallback_headful(tmpdir):
+    pytest.importorskip("tkinter")
+    env = {**os.environ, "MPLBACKEND": "", "MPLCONFIGDIR": str(tmpdir)}
+    backend = subprocess.check_output(
+        [sys.executable, "-c",
+         "import matplotlib.pyplot; print(matplotlib.get_backend())"],
+        env=env, universal_newlines=True)
+    # The actual backend will depend on what's installed, but at least tkagg is
+    # present.
+    assert backend.strip().lower() != "agg"

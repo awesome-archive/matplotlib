@@ -23,12 +23,15 @@
 
 # TODO 2013-04-08 ensure the menu files are as compact as possible by default, similar to subset.pl
 # TODO 2013-05-22 in Arimo, the latin subset doesn't include ; but the greek does. why on earth is this happening?
-from __future__ import print_function
-import fontforge
-import sys
+
 import getopt
 import os
 import struct
+import subprocess
+import sys
+
+import fontforge
+
 
 def log_namelist(nam, unicode):
     if nam and isinstance(unicode, int):
@@ -45,7 +48,7 @@ def select_with_refs(font, unicode, newfont, pe = None, nam = None):
             log_namelist(nam, ref[0])
             if pe:
                 print('SelectMore("%s")' % ref[0], file=pe)
-    except:
+    except Exception:
         print('Resolving references on u+%04x failed' % unicode)
 
 def subset_font_raw(font_in, font_out, unicodes, opts):
@@ -55,25 +58,28 @@ def subset_font_raw(font_in, font_out, unicodes, opts):
         # and invert comments on following 2 lines
         # nam_fn = opts['--namelist']
         nam_fn = font_out + '.nam'
-        nam = file(nam_fn, 'w')
+        nam = open(nam_fn, 'w')
     else:
         nam = None
     if '--script' in opts:
         pe_fn = "/tmp/script.pe"
-        pe = file(pe_fn, 'w')
+        pe = open(pe_fn, 'w')
     else:
         pe = None
     font = fontforge.open(font_in)
     if pe:
-      print('Open("' + font_in + '")', file=pe)
-      extract_vert_to_script(font_in, pe)
+        print('Open("' + font_in + '")', file=pe)
+        extract_vert_to_script(font_in, pe)
     for i in unicodes:
         select_with_refs(font, i, font, pe, nam)
 
     addl_glyphs = []
-    if '--nmr' in opts: addl_glyphs.append('nonmarkingreturn')
-    if '--null' in opts: addl_glyphs.append('.null')
-    if '--nd' in opts: addl_glyphs.append('.notdef')
+    if '--nmr' in opts:
+        addl_glyphs.append('nonmarkingreturn')
+    if '--null' in opts:
+        addl_glyphs.append('.null')
+    if '--nd' in opts:
+        addl_glyphs.append('.notdef')
     for glyph in addl_glyphs:
         font.selection.select(('more',), glyph)
         if nam:
@@ -132,7 +138,7 @@ def subset_font_raw(font_in, font_out, unicodes, opts):
                     font.selection.select(glname)
                     font.copy()
                     font.selection.none()
-                    newgl = glname.replace('.display','')
+                    newgl = glname.replace('.display', '')
                     font.selection.select(newgl)
                     font.paste()
                 font.selection.select(glname)
@@ -145,7 +151,7 @@ def subset_font_raw(font_in, font_out, unicodes, opts):
     if pe:
         print('Generate("' + font_out + '")', file=pe)
         pe.close()
-        os.system("fontforge -script " + pe_fn)
+        subprocess.call(["fontforge", "-script", pe_fn])
     else:
         font.generate(font_out, flags = flags)
     font.close()
@@ -160,7 +166,7 @@ def subset_font_raw(font_in, font_out, unicodes, opts):
 def subset_font(font_in, font_out, unicodes, opts):
     font_out_raw = font_out
     if not font_out_raw.endswith('.ttf'):
-        font_out_raw += '.ttf';
+        font_out_raw += '.ttf'
     subset_font_raw(font_in, font_out_raw, unicodes, opts)
     if font_out != font_out_raw:
         os.rename(font_out_raw, font_out)
@@ -194,7 +200,7 @@ def getsubset(subset, font_in):
     latin += [0x02da] # ring
     latin += [0x02dc] # tilde
     latin += [0x2074] # foursuperior
-    latin += [0x2215] # divison slash
+    latin += [0x2215] # division slash
     latin += [0x2044] # fraction slash
     latin += [0xe0ff] # PUA: Font logo
     latin += [0xeffd] # PUA: Font version number
@@ -221,13 +227,13 @@ def getsubset(subset, font_in):
     if 'vietnamese' in subset:
         # 2011-07-16 DC: Charset from http://vietunicode.sourceforge.net/charset/ + U+1ef9 from Fontaine
         result += [0x00c0, 0x00c1, 0x00c2, 0x00c3, 0x00C8, 0x00C9,
-               0x00CA, 0x00CC, 0x00CD, 0x00D2, 0x00D3, 0x00D4,
-               0x00D5, 0x00D9, 0x00DA, 0x00DD, 0x00E0, 0x00E1,
-               0x00E2, 0x00E3, 0x00E8, 0x00E9, 0x00EA, 0x00EC,
-               0x00ED, 0x00F2, 0x00F3, 0x00F4, 0x00F5, 0x00F9,
-               0x00FA, 0x00FD, 0x0102, 0x0103, 0x0110, 0x0111,
-               0x0128, 0x0129, 0x0168, 0x0169, 0x01A0, 0x01A1,
-               0x01AF, 0x01B0, 0x20AB] + range(0x1EA0, 0x1EFA)
+                   0x00CA, 0x00CC, 0x00CD, 0x00D2, 0x00D3, 0x00D4,
+                   0x00D5, 0x00D9, 0x00DA, 0x00DD, 0x00E0, 0x00E1,
+                   0x00E2, 0x00E3, 0x00E8, 0x00E9, 0x00EA, 0x00EC,
+                   0x00ED, 0x00F2, 0x00F3, 0x00F4, 0x00F5, 0x00F9,
+                   0x00FA, 0x00FD, 0x0102, 0x0103, 0x0110, 0x0111,
+                   0x0128, 0x0129, 0x0168, 0x0169, 0x01A0, 0x01A1,
+                   0x01AF, 0x01B0, 0x20AB] + range(0x1EA0, 0x1EFA)
     if 'greek' in subset:
         # Could probably be more aggressive here and exclude archaic characters,
         # but lack data
@@ -300,7 +306,6 @@ def getsubset(subset, font_in):
             if glyph.glyphname.endswith('.display'):
                 result.append(glyph.glyphname)
 
-    # print(result)
     return result
 
 # code for extracting vertical metrics from a TrueType font
@@ -340,7 +345,8 @@ def set_os2_vert(pe, name, val):
 # http://sourceforge.net/mailarchive/forum.php?thread_name=20100906085718.GB1907%40khaled-laptop&forum_name=fontforge-users
 
 def extract_vert_to_script(font_in, pe):
-    data = file(font_in, 'rb').read()
+    with open(font_in, 'rb') as in_file:
+        data = in_file.read()
     sfnt = Sfnt(data)
     hhea = sfnt.hhea()
     os2 = sfnt.os2()

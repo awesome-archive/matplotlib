@@ -11,14 +11,14 @@ Status
 **Progress**
 
 Initial changes added in 1.3. Conversion of the gallery is on-going.
-29 September 2015 - The last `pylab_examples` where `pylab` is imported has been converted over to use `matplotlib pyplot` and `numpy`.
+29 September 2015 - The last ``pylab_examples`` where `pylab` is imported has been converted over to use :mod:`matplotlib.pyplot` and `numpy`.
 
 Branches and Pull requests
 ==========================
 
 #1623, #1924, #2181
 
-PR `#2474 <https://github.com/matplotlib/matplotlib/pull/2474`>_
+PR `#2474 <https://github.com/matplotlib/matplotlib/pull/2474>`_
 demonstrates a single example being cleaned up and moved to the
 appropriate section.
 
@@ -87,14 +87,28 @@ the gallery would remain in those directories until they are cleaned
 up. After clean-up, they would be moved to one of the new gallery
 sections described above. "Clean-up" should involve:
 
+* `sphinx-gallery docstrings <https://sphinx-gallery.readthedocs.io/en/latest/>`_:
+  a title and a description of the example formatted as follows, at the top of
+  the example::
+
+    """
+    ===============================
+    Colormaps alter your perception
+    ===============================
+
+    Here I plot the function
+
+    .. math:: f(x, y) = \sin(x) + \cos(y)
+
+    with different colormaps. Look at how colormaps alter your perception!
+    """
+
+
 * PEP8_ clean-ups (running `flake8
-  <https://pypi.python.org/pypi/flake8>`_, or a similar checker, is
+  <https://pypi.org/project/flake8>`_, or a similar checker, is
   highly recommended)
 * Commented-out code should be removed.
-* Add introductory sentence or paragraph in the main docstring. See
-  `6d1b8a2
-  <https://github.com/tonysyu/matplotlib/commit/6d1b8a2ef277091eb718690e4443e6fa30cbc488>`_.
-* Replace uses of ``pylab`` interface with ``pyplot`` (+ ``numpy``,
+* Replace uses of `pylab` interface with `.pyplot` (+ `numpy`,
   etc.). See `c25ef1e
   <https://github.com/tonysyu/matplotlib/commit/c25ef1e02b3a0ecb279492409dac0de9b3d2c0e2>`_
 * Remove shebang line, e.g.:
@@ -120,15 +134,15 @@ sections described above. "Clean-up" should involve:
   and `1458aa8
   <https://github.com/tonysyu/matplotlib/commit/1458aa87c5eae9dd99e141956a6adf7a0f3c6707>`_
 
-Use of ``pylab`` should be demonstrated/discussed on a dedicated help
+Use of `pylab` should be demonstrated/discussed on a dedicated help
 page instead of the gallery examples.
 
 **Note:** When moving an existing example, you should search for
 references to that example.  For example, the API documentation for
-`axes.py` and `pyplot.py` may use these examples to generate
+:file:`axes.py` and :file:`pyplot.py` may use these examples to generate
 plots. Use your favorite search tool (e.g., grep, ack, `grin
-<http://pypi.python.org/pypi/grin>`_, `pss
-<http://pypi.python.org/pypi/pss>`_) to search the matplotlib
+<https://pypi.org/project/grin>`_, `pss
+<https://pypi.org/project/pss>`_) to search the matplotlib
 package. See `2dc9a46
 <https://github.com/tonysyu/matplotlib/commit/2dc9a4651e5e566afc0866c603aa8d06aaf32b71>`_
 and `aa6b410
@@ -178,10 +192,6 @@ the entry point to these examples, and sections could really help users
 navigate the gallery. Thus, tags are complementary to this reorganization.
 
 
-.. _PEP8: http://www.python.org/dev/peps/pep-0008/
+.. _PEP8: https://www.python.org/dev/peps/pep-0008/
 
-.. [1] http://github.com/matplotlib/matplotlib/pull/714
-.. [2] http://github.com/matplotlib/matplotlib/issues/524
-.. [3] http://matplotlib.1069221.n5.nabble.com/Matplotlib-gallery-td762.html#a33379091
-.. [4] http://www.loria.fr/~rougier/teaching/matplotlib/
-.. [5] http://www.loria.fr/~rougier/coding/gallery/
+.. [1] https://github.com/matplotlib/matplotlib/pull/714

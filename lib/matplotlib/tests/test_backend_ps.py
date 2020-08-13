@@ -1,179 +1,135 @@
-# -*- coding: utf-8 -*-
-
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-
 import io
+from pathlib import Path
 import re
-import numpy as np
-import six
+import tempfile
 
-import matplotlib
+import pytest
+
+import matplotlib as mpl
 import matplotlib.pyplot as plt
-from matplotlib import patheffects
-from matplotlib.testing.decorators import cleanup, knownfailureif
+from matplotlib import cbook, patheffects
+from matplotlib.testing.decorators import image_comparison
 
 
-needs_ghostscript = knownfailureif(
-    matplotlib.checkdep_ghostscript()[0] is None,
-    "This test needs a ghostscript installation")
+needs_ghostscript = pytest.mark.skipif(
+    "eps" not in mpl.testing.compare.converter,
+    reason="This test needs a ghostscript installation")
+needs_usetex = pytest.mark.skipif(
+    not mpl.checkdep_usetex(True),
+    reason="This test needs a TeX installation")
 
 
-needs_tex = knownfailureif(
-    not matplotlib.checkdep_tex(),
-    "This test needs a TeX installation")
+# This tests tends to hit a TeX cache lock on AppVeyor.
+@pytest.mark.flaky(reruns=3)
+@pytest.mark.parametrize('orientation', ['portrait', 'landscape'])
+@pytest.mark.parametrize('format, use_log, rcParams', [
+    ('ps', False, {}),
+    ('ps', False, {'ps.usedistiller': 'ghostscript'}),
+    ('ps', False, {'ps.usedistiller': 'xpdf'}),
+    ('ps', False, {'text.usetex': True}),
+    ('eps', False, {}),
+    ('eps', True, {'ps.useafm': True}),
+    ('eps', False, {'text.usetex': True}),
+], ids=[
+    'ps',
+    'ps with distiller=ghostscript',
+    'ps with distiller=xpdf',
+    'ps with usetex',
+    'eps',
+    'eps afm',
+    'eps with usetex'
+])
+def test_savefig_to_stringio(format, use_log, rcParams, orientation,
+                             monkeypatch):
+    mpl.rcParams.update(rcParams)
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "0")  # For reproducibility.
 
-
-def _test_savefig_to_stringio(format='ps', use_log=False):
     fig, ax = plt.subplots()
-    buffers = [
-        six.moves.StringIO(),
-        io.StringIO(),
-        io.BytesIO()]
 
-    if use_log:
-        ax.set_yscale('log')
+    with io.StringIO() as s_buf, io.BytesIO() as b_buf:
 
-    ax.plot([1, 2], [1, 2])
-    ax.set_title("Déjà vu")
-    for buffer in buffers:
-        fig.savefig(buffer, format=format)
+        if use_log:
+            ax.set_yscale('log')
 
-    values = [x.getvalue() for x in buffers]
+        ax.plot([1, 2], [1, 2])
+        title = "Déjà vu"
+        if not mpl.rcParams["text.usetex"]:
+            title += " \N{MINUS SIGN}\N{EURO SIGN}"
+        ax.set_title(title)
+        allowable_exceptions = []
+        if rcParams.get("ps.usedistiller"):
+            allowable_exceptions.append(mpl.ExecutableNotFoundError)
+        if rcParams.get("text.usetex"):
+            allowable_exceptions.append(RuntimeError)
+        try:
+            fig.savefig(s_buf, format=format, orientation=orientation)
+            fig.savefig(b_buf, format=format, orientation=orientation)
+        except tuple(allowable_exceptions) as exc:
+            pytest.skip(str(exc))
 
-    if six.PY3:
-        values = [
-            values[0].encode('ascii'),
-            values[1].encode('ascii'),
-            values[2]]
+        s_val = s_buf.getvalue().encode('ascii')
+        b_val = b_buf.getvalue()
 
-    # Remove comments from the output.  This includes things that
-    # could change from run to run, such as the time.
-    values = [re.sub(b'%%.*?\n', b'', x) for x in values]
+        if rcParams.get("ps.usedistiller") or rcParams.get("text.usetex"):
+            # Strip out CreationDate betcase ghostscript doesn't obey
+            # SOURCE_DATE_EPOCH.  Note that in usetex mode, we *always* call
+            # gs_distill, even if ps.usedistiller is unset.
+            s_val = re.sub(b"(?<=\n%%CreationDate: ).*", b"", s_val)
+            b_val = re.sub(b"(?<=\n%%CreationDate: ).*", b"", b_val)
 
-    assert values[0] == values[1]
-    assert values[1] == values[2].replace(b'\r\n', b'\n')
-    for buffer in buffers:
-        buffer.close()
-
-
-@cleanup
-def test_savefig_to_stringio():
-    _test_savefig_to_stringio()
-
-
-@cleanup
-@needs_ghostscript
-def test_savefig_to_stringio_with_distiller():
-    matplotlib.rcParams['ps.usedistiller'] = 'ghostscript'
-    _test_savefig_to_stringio()
+        assert s_val == b_val.replace(b'\r\n', b'\n')
 
 
-@cleanup
-@needs_tex
-@needs_ghostscript
-def test_savefig_to_stringio_with_usetex():
-    matplotlib.rcParams['text.latex.unicode'] = True
-    matplotlib.rcParams['text.usetex'] = True
-    _test_savefig_to_stringio()
-
-
-@cleanup
-def test_savefig_to_stringio_eps():
-    _test_savefig_to_stringio(format='eps')
-
-
-@cleanup
-def test_savefig_to_stringio_eps_afm():
-    matplotlib.rcParams['ps.useafm'] = True
-    _test_savefig_to_stringio(format='eps', use_log=True)
-
-
-@cleanup
-@needs_tex
-@needs_ghostscript
-def test_savefig_to_stringio_with_usetex_eps():
-    matplotlib.rcParams['text.latex.unicode'] = True
-    matplotlib.rcParams['text.usetex'] = True
-    _test_savefig_to_stringio(format='eps')
-
-
-@cleanup
-def test_composite_image():
-    # Test that figures can be saved with and without combining multiple images
-    # (on a single set of axes) into a single composite image.
-    X, Y = np.meshgrid(np.arange(-5, 5, 1), np.arange(-5, 5, 1))
-    Z = np.sin(Y ** 2)
-    fig = plt.figure()
-    ax = fig.add_subplot(1, 1, 1)
-    ax.set_xlim(0, 3)
-    ax.imshow(Z, extent=[0, 1, 0, 1])
-    ax.imshow(Z[::-1], extent=[2, 3, 0, 1])
-    plt.rcParams['image.composite_image'] = True
-    with io.BytesIO() as ps:
-        fig.savefig(ps, format="ps")
-        ps.seek(0)
-        buff = ps.read()
-        assert buff.count(six.b(' colorimage')) == 1
-    plt.rcParams['image.composite_image'] = False
-    with io.BytesIO() as ps:
-        fig.savefig(ps, format="ps")
-        ps.seek(0)
-        buff = ps.read()
-        assert buff.count(six.b(' colorimage')) == 2
-
-
-@cleanup
 def test_patheffects():
-    with matplotlib.rc_context():
-        matplotlib.rcParams['path.effects'] = [
-            patheffects.withStroke(linewidth=4, foreground='w')]
-        fig, ax = plt.subplots()
-        ax.plot([1, 2, 3])
-        with io.BytesIO() as ps:
-            fig.savefig(ps, format='ps')
+    mpl.rcParams['path.effects'] = [
+        patheffects.withStroke(linewidth=4, foreground='w')]
+    fig, ax = plt.subplots()
+    ax.plot([1, 2, 3])
+    with io.BytesIO() as ps:
+        fig.savefig(ps, format='ps')
 
 
-@cleanup
-@needs_tex
+@needs_usetex
 @needs_ghostscript
-def test_tilde_in_tempfilename():
-    # Tilde ~ in the tempdir path (e.g. TMPDIR, TMP oder TEMP on windows
+def test_tilde_in_tempfilename(tmpdir):
+    # Tilde ~ in the tempdir path (e.g. TMPDIR, TMP or TEMP on windows
     # when the username is very long and windows uses a short name) breaks
     # latex before https://github.com/matplotlib/matplotlib/pull/5928
-    import tempfile
-    import shutil
-    import os
-    import os.path
-
-    tempdir = None
-    old_tempdir = tempfile.tempdir
-    try:
-        # change the path for new tempdirs, which is used
-        # internally by the ps backend to write a file
-        tempdir = tempfile.mkdtemp()
-        base_tempdir = os.path.join(tempdir, "short~1")
-        os.makedirs(base_tempdir)
-        tempfile.tempdir = base_tempdir
-
+    base_tempdir = Path(tmpdir, "short-1")
+    base_tempdir.mkdir()
+    # Change the path for new tempdirs, which is used internally by the ps
+    # backend to write a file.
+    with cbook._setattr_cm(tempfile, tempdir=str(base_tempdir)):
         # usetex results in the latex call, which does not like the ~
-        plt.rc('text', usetex=True)
+        mpl.rcParams['text.usetex'] = True
         plt.plot([1, 2, 3, 4])
         plt.xlabel(r'\textbf{time} (s)')
-        #matplotlib.verbose.set_level("debug")
-        output_eps = os.path.join(base_tempdir, 'tex_demo.eps')
         # use the PS backend to write the file...
-        plt.savefig(output_eps, format="ps")
-    finally:
-        tempfile.tempdir = old_tempdir
-        if tempdir:
-            try:
-                shutil.rmtree(tempdir)
-            except Exception as e:
-                # do not break if this is not removeable...
-                print(e)
+        plt.savefig(base_tempdir / 'tex_demo.eps', format="ps")
 
 
-if __name__ == '__main__':
-    import nose
-    nose.runmodule(argv=['-s', '--with-doctest'], exit=False)
+@image_comparison(["empty.eps"])
+def test_transparency():
+    fig, ax = plt.subplots()
+    ax.set_axis_off()
+    ax.plot([0, 1], color="r", alpha=0)
+    ax.text(.5, .5, "foo", color="r", alpha=0)
+
+
+@needs_usetex
+def test_failing_latex():
+    """Test failing latex subprocess call"""
+    mpl.rcParams['text.usetex'] = True
+    # This fails with "Double subscript"
+    plt.xlabel("$22_2_2$")
+    with pytest.raises(RuntimeError):
+        plt.savefig(io.BytesIO(), format="ps")
+
+
+@needs_usetex
+def test_partial_usetex(caplog):
+    caplog.set_level("WARNING")
+    plt.figtext(.5, .5, "foo", usetex=True)
+    plt.savefig(io.BytesIO(), format="ps")
+    assert caplog.records and all("as if usetex=False" in record.getMessage()
+                                  for record in caplog.records)

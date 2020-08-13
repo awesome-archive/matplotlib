@@ -3,8 +3,8 @@
 /* _backend_agg.h
 */
 
-#ifndef __BACKEND_AGG_H__
-#define __BACKEND_AGG_H__
+#ifndef MPL_BACKEND_AGG_H
+#define MPL_BACKEND_AGG_H
 
 #include <cmath>
 #include <vector>
@@ -43,8 +43,8 @@
 
 /**********************************************************************/
 
-// a helper class to pass agg::buffer objects around.  agg::buffer is
-// a class in the swig wrapper
+// a helper class to pass agg::buffer objects around.  
+
 class BufferRegion
 {
   public:
@@ -182,8 +182,8 @@ class RendererAgg
     template <class CoordinateArray, class OffsetArray, class ColorArray>
     void draw_quad_mesh(GCAgg &gc,
                         agg::trans_affine &master_transform,
-                        size_t mesh_width,
-                        size_t mesh_height,
+                        unsigned int mesh_width,
+                        unsigned int mesh_height,
                         CoordinateArray &coordinates,
                         OffsetArray &offsets,
                         agg::trans_affine &offset_trans,
@@ -203,9 +203,6 @@ class RendererAgg
                                 ColorArray &colors,
                                 agg::trans_affine &trans);
 
-    void tostring_rgb(uint8_t *buf);
-    void tostring_argb(uint8_t *buf);
-    void tostring_bgra(uint8_t *buf);
     agg::rect_i get_content_extents();
     void clear();
 
@@ -239,8 +236,8 @@ class RendererAgg
     void *lastclippath;
     agg::trans_affine lastclippath_transform;
 
-    static const size_t HATCH_SIZE = 72;
-    agg::int8u hatchBuffer[HATCH_SIZE * HATCH_SIZE * 4];
+    size_t hatch_size;
+    agg::int8u *hatchBuffer;
     agg::rendering_buffer hatchRenderingBuffer;
 
     agg::rgba _fill_color;
@@ -254,7 +251,7 @@ class RendererAgg
     template <class R>
     void set_clipbox(const agg::rect_d &cliprect, R &rasterizer);
 
-    bool render_clippath(py::PathIterator &clippath, const agg::trans_affine &clippath_trans);
+    bool render_clippath(py::PathIterator &clippath, const agg::trans_affine &clippath_trans, e_snap_mode snap_mode);
 
     template <class PathIteratorType>
     void _draw_path(PathIteratorType &path, bool has_clippath, const facepair_t &face, GCAgg &gc);
@@ -281,8 +278,8 @@ class RendererAgg
                                        DashesVector &linestyles,
                                        AntialiasedArray &antialiaseds,
                                        e_offset_position offset_position,
-                                       int check_snap,
-                                       int has_curves);
+                                       bool check_snap,
+                                       bool has_curves);
 
     template <class PointArray, class ColorArray>
     void _draw_gouraud_triangle(PointArray &points,
@@ -359,7 +356,7 @@ RendererAgg::_draw_path(path_t &path, bool has_clippath, const facepair_t &face,
         agg::trans_affine hatch_trans;
         hatch_trans *= agg::trans_affine_scaling(1.0, -1.0);
         hatch_trans *= agg::trans_affine_translation(0.0, 1.0);
-        hatch_trans *= agg::trans_affine_scaling(HATCH_SIZE, HATCH_SIZE);
+        hatch_trans *= agg::trans_affine_scaling(hatch_size, hatch_size);
         hatch_path_trans_t hatch_path_trans(hatch_path, hatch_trans);
         hatch_path_curve_t hatch_path_curve(hatch_path_trans);
         hatch_path_stroke_t hatch_path_stroke(hatch_path_curve);
@@ -371,7 +368,7 @@ RendererAgg::_draw_path(path_t &path, bool has_clippath, const facepair_t &face,
         renderer_base rb(hatch_img_pixf);
         renderer_aa rs(rb);
         rb.clear(_fill_color);
-        rs.color(gc.color);
+        rs.color(gc.hatch_color);
 
         theRasterizer.add_path(hatch_path_curve);
         agg::render_scanlines(theRasterizer, slineP8, rs);
@@ -382,7 +379,7 @@ RendererAgg::_draw_path(path_t &path, bool has_clippath, const facepair_t &face,
         // function
         set_clipbox(gc.cliprect, theRasterizer);
         if (has_clippath) {
-            render_clippath(gc.clippath.path, gc.clippath.trans);
+            render_clippath(gc.clippath.path, gc.clippath.trans, gc.snap_mode);
         }
 
         // Transfer the hatch to the main image buffer
@@ -471,7 +468,7 @@ RendererAgg::draw_path(GCAgg &gc, PathIterator &path, agg::trans_affine &trans, 
     theRasterizer.reset_clipping();
     rendererBase.reset_clipping(true);
     set_clipbox(gc.cliprect, theRasterizer);
-    bool has_clippath = render_clippath(gc.clippath.path, gc.clippath.trans);
+    bool has_clippath = render_clippath(gc.clippath.path, gc.clippath.trans, gc.snap_mode);
 
     trans *= agg::trans_affine_scaling(1.0, -1.0);
     trans *= agg::trans_affine_translation(0.0, (double)height);
@@ -484,7 +481,7 @@ RendererAgg::draw_path(GCAgg &gc, PathIterator &path, agg::trans_affine &trans, 
 
     transformed_path_t tpath(path, trans);
     nan_removed_t nan_removed(tpath, true, path.has_curves());
-    clipped_t clipped(nan_removed, clip && !path.has_curves(), width, height);
+    clipped_t clipped(nan_removed, clip, width, height);
     snapped_t snapped(clipped, gc.snap_mode, path.total_vertices(), snapping_linewidth);
     simplify_t simplified(snapped, simplify, path.simplify_threshold());
     curve_t curve(simplified);
@@ -589,7 +586,7 @@ inline void RendererAgg::draw_markers(GCAgg &gc,
         theRasterizer.reset_clipping();
         rendererBase.reset_clipping(true);
         set_clipbox(gc.cliprect, rendererBase);
-        bool has_clippath = render_clippath(gc.clippath.path, gc.clippath.trans);
+        bool has_clippath = render_clippath(gc.clippath.path, gc.clippath.trans, gc.snap_mode);
 
         double x, y;
 
@@ -738,14 +735,14 @@ inline void RendererAgg::draw_text_image(GCAgg &gc, ImageArray &image, int x, in
     typedef agg::renderer_scanline_aa<renderer_base, color_span_alloc_type, span_gen_type>
     renderer_type;
 
+    theRasterizer.reset_clipping();
+    rendererBase.reset_clipping(true);
     if (angle != 0.0) {
         agg::rendering_buffer srcbuf(
                 image.data(), (unsigned)image.dim(1),
                 (unsigned)image.dim(0), (unsigned)image.dim(1));
         agg::pixfmt_gray8 pixf_img(srcbuf);
 
-        theRasterizer.reset_clipping();
-        rendererBase.reset_clipping(true);
         set_clipbox(gc.cliprect, theRasterizer);
 
         agg::trans_affine mtx;
@@ -786,9 +783,9 @@ inline void RendererAgg::draw_text_image(GCAgg &gc, ImageArray &image, int x, in
             agg::rect_i clip;
 
             clip.init(int(mpl_round(gc.cliprect.x1)),
-                      int(mpl_round(gc.cliprect.y1)),
+                      int(mpl_round(height - gc.cliprect.y2)),
                       int(mpl_round(gc.cliprect.x2)),
-                      int(mpl_round(gc.cliprect.y2)));
+                      int(mpl_round(height - gc.cliprect.y1)));
             text.clip(clip);
         }
 
@@ -835,7 +832,7 @@ inline void RendererAgg::draw_image(GCAgg &gc,
     theRasterizer.reset_clipping();
     rendererBase.reset_clipping(true);
     set_clipbox(gc.cliprect, theRasterizer);
-    bool has_clippath = render_clippath(gc.clippath.path, gc.clippath.trans);
+    bool has_clippath = render_clippath(gc.clippath.path, gc.clippath.trans, gc.snap_mode);
 
     agg::rendering_buffer buffer;
     buffer.attach(
@@ -915,8 +912,8 @@ inline void RendererAgg::_draw_path_collection_generic(GCAgg &gc,
                                                        DashesVector &linestyles,
                                                        AntialiasedArray &antialiaseds,
                                                        e_offset_position offset_position,
-                                                       int check_snap,
-                                                       int has_curves)
+                                                       bool check_snap,
+                                                       bool has_curves)
 {
     typedef agg::conv_transform<typename PathGenerator::path_iterator> transformed_path_t;
     typedef PathNanRemover<transformed_path_t> nan_removed_t;
@@ -944,7 +941,7 @@ inline void RendererAgg::_draw_path_collection_generic(GCAgg &gc,
     theRasterizer.reset_clipping();
     rendererBase.reset_clipping(true);
     set_clipbox(cliprect, theRasterizer);
-    bool has_clippath = render_clippath(clippath, clippath_trans);
+    bool has_clippath = render_clippath(clippath, clippath_trans, gc.snap_mode);
 
     // Set some defaults, assuming no face or edge
     gc.linewidth = 0.0;
@@ -1009,7 +1006,7 @@ inline void RendererAgg::_draw_path_collection_generic(GCAgg &gc,
 
             transformed_path_t tpath(path, trans);
             nan_removed_t nan_removed(tpath, true, has_curves);
-            clipped_t clipped(nan_removed, do_clip && !has_curves, width, height);
+            clipped_t clipped(nan_removed, do_clip, width, height);
             snapped_t snapped(
                 clipped, gc.snap_mode, path.total_vertices(), points_to_pixels(gc.linewidth));
             if (has_curves) {
@@ -1068,8 +1065,8 @@ inline void RendererAgg::draw_path_collection(GCAgg &gc,
                                   linestyles,
                                   antialiaseds,
                                   offset_position,
-                                  1,
-                                  1);
+                                  true,
+                                  true);
 }
 
 template <class CoordinateArray>
@@ -1148,8 +1145,8 @@ class QuadMeshGenerator
 template <class CoordinateArray, class OffsetArray, class ColorArray>
 inline void RendererAgg::draw_quad_mesh(GCAgg &gc,
                                         agg::trans_affine &master_transform,
-                                        size_t mesh_width,
-                                        size_t mesh_height,
+                                        unsigned int mesh_width,
+                                        unsigned int mesh_height,
                                         CoordinateArray &coordinates,
                                         OffsetArray &offsets,
                                         agg::trans_affine &offset_trans,
@@ -1163,13 +1160,6 @@ inline void RendererAgg::draw_quad_mesh(GCAgg &gc,
     array::scalar<double, 1> linewidths(gc.linewidth);
     array::scalar<uint8_t, 1> antialiaseds(antialiased);
     DashesVector linestyles;
-    ColorArray *edgecolors_ptr = &edgecolors;
-
-    if (edgecolors.size() == 0) {
-        if (antialiased) {
-            edgecolors_ptr = &facecolors;
-        }
-    }
 
     _draw_path_collection_generic(gc,
                                   master_transform,
@@ -1181,13 +1171,13 @@ inline void RendererAgg::draw_quad_mesh(GCAgg &gc,
                                   offsets,
                                   offset_trans,
                                   facecolors,
-                                  *edgecolors_ptr,
+                                  edgecolors,
                                   linewidths,
                                   linestyles,
                                   antialiaseds,
                                   OFFSET_POSITION_FIGURE,
-                                  0,
-                                  0);
+                                  true, // check_snap
+                                  false);
 }
 
 template <class PointArray, class ColorArray>
@@ -1252,7 +1242,7 @@ inline void RendererAgg::draw_gouraud_triangle(GCAgg &gc,
     theRasterizer.reset_clipping();
     rendererBase.reset_clipping(true);
     set_clipbox(gc.cliprect, theRasterizer);
-    bool has_clippath = render_clippath(gc.clippath.path, gc.clippath.trans);
+    bool has_clippath = render_clippath(gc.clippath.path, gc.clippath.trans, gc.snap_mode);
 
     _draw_gouraud_triangle(points, colors, trans, has_clippath);
 }
@@ -1266,7 +1256,7 @@ inline void RendererAgg::draw_gouraud_triangles(GCAgg &gc,
     theRasterizer.reset_clipping();
     rendererBase.reset_clipping(true);
     set_clipbox(gc.cliprect, theRasterizer);
-    bool has_clippath = render_clippath(gc.clippath.path, gc.clippath.trans);
+    bool has_clippath = render_clippath(gc.clippath.path, gc.clippath.trans, gc.snap_mode);
 
     for (int i = 0; i < points.dim(0); ++i) {
         typename PointArray::sub_t point = points.subarray(i);

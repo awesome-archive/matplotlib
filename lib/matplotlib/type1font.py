@@ -1,10 +1,9 @@
 """
-This module contains a class representing a Type 1 font.
+A class representing a Type 1 font.
 
 This version reads pfa and pfb files and splits them for embedding in
 pdf files. It also supports SlantFont and ExtendFont transformations,
-similarly to pdfTeX and friends. There is no support yet for
-subsetting.
+similarly to pdfTeX and friends. There is no support yet for subsetting.
 
 Usage::
 
@@ -22,44 +21,47 @@ Sources:
   v1.1, 1993. ISBN 0-201-57044-0.
 """
 
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-
-import six
-from six import unichr
-
 import binascii
-import io
+import enum
 import itertools
-import numpy as np
 import re
 import struct
-import sys
 
-if six.PY3:
-    def ord(x):
-        return x
+import numpy as np
+
+from matplotlib.cbook import _format_approx
 
 
-class Type1Font(object):
+# token types
+_TokenType = enum.Enum('_TokenType',
+                       'whitespace name string delimiter number')
+
+
+class Type1Font:
     """
     A class representing a Type-1 font, for use by backends.
 
-    .. attribute:: parts
+    Attributes
+    ----------
+    parts : tuple
+        A 3-tuple of the cleartext part, the encrypted part, and the finale of
+        zeros.
 
-       A 3-tuple of the cleartext part, the encrypted part, and the
-       finale of zeros.
+    prop : Dict[str, Any]
+        A dictionary of font properties.
 
-    .. attribute:: prop
-
-       A dictionary of font properties.
     """
     __slots__ = ('parts', 'prop')
 
     def __init__(self, input):
         """
-        Initialize a Type-1 font. *input* can be either the file name of
-        a pfb file or a 3-tuple of already-decoded Type-1 font parts.
+        Initialize a Type-1 font.
+
+        Parameters
+        ----------
+        input : str or 3-tuple
+            Either a pfb file name, or a 3-tuple of already-decoded Type-1
+            font `~.Type1Font.parts`.
         """
         if isinstance(input, tuple) and len(input) == 3:
             self.parts = input
@@ -71,21 +73,19 @@ class Type1Font(object):
         self._parse()
 
     def _read(self, file):
-        """
-        Read the font from a file, decoding into usable parts.
-        """
+        """Read the font from a file, decoding into usable parts."""
         rawdata = file.read()
         if not rawdata.startswith(b'\x80'):
             return rawdata
 
         data = b''
-        while len(rawdata) > 0:
+        while rawdata:
             if not rawdata.startswith(b'\x80'):
                 raise RuntimeError('Broken pfb file (expected byte 128, '
-                                   'got %d)' % ord(rawdata[0]))
-            type = ord(rawdata[1])
+                                   'got %d)' % rawdata[0])
+            type = rawdata[1]
             if type in (1, 2):
-                length, = struct.unpack(str('<i'), rawdata[2:6])
+                length, = struct.unpack('<i', rawdata[2:6])
                 segment = rawdata[6:6 + length]
                 rawdata = rawdata[6 + length:]
 
@@ -129,11 +129,10 @@ class Type1Font(object):
         if zeros:
             raise RuntimeError('Insufficiently many zeros in Type 1 font')
 
-        # Convert encrypted part to binary (if we read a pfb file, we
-        # may end up converting binary to hexadecimal to binary again;
-        # but if we read a pfa file, this part is already in hex, and
-        # I am not quite sure if even the pfb format guarantees that
-        # it will be in binary).
+        # Convert encrypted part to binary (if we read a pfb file, we may end
+        # up converting binary to hexadecimal to binary again; but if we read
+        # a pfa file, this part is already in hex, and I am not quite sure if
+        # even the pfb format guarantees that it will be in binary).
         binary = binascii.unhexlify(data[len1:idx+1])
 
         return data[:len1], binary, data[idx+1:]
@@ -143,25 +142,18 @@ class Type1Font(object):
     _comment_re = re.compile(br'%[^\r\n\v]*')
     _instring_re = re.compile(br'[()\\]')
 
-    # token types, compared via object identity (poor man's enum)
-    _whitespace = object()
-    _name = object()
-    _string = object()
-    _delimiter = object()
-    _number = object()
-
     @classmethod
     def _tokens(cls, text):
         """
         A PostScript tokenizer. Yield (token, value) pairs such as
-        (cls._whitespace, '   ') or (cls._name, '/Foobar').
+        (_TokenType.whitespace, '   ') or (_TokenType.name, '/Foobar').
         """
         pos = 0
         while pos < len(text):
             match = (cls._comment_re.match(text[pos:]) or
                      cls._whitespace_re.match(text[pos:]))
             if match:
-                yield (cls._whitespace, match.group())
+                yield (_TokenType.whitespace, match.group())
                 pos += match.end()
             elif text[pos] == b'(':
                 start = pos
@@ -178,25 +170,25 @@ class Type1Font(object):
                         depth -= 1
                     else:  # a backslash - skip the next character
                         pos += 1
-                yield (cls._string, text[start:pos])
+                yield (_TokenType.string, text[start:pos])
             elif text[pos:pos + 2] in (b'<<', b'>>'):
-                yield (cls._delimiter, text[pos:pos + 2])
+                yield (_TokenType.delimiter, text[pos:pos + 2])
                 pos += 2
             elif text[pos] == b'<':
                 start = pos
                 pos += text[pos:].index(b'>')
-                yield (cls._string, text[start:pos])
+                yield (_TokenType.string, text[start:pos])
             else:
                 match = cls._token_re.match(text[pos:])
                 if match:
                     try:
                         float(match.group())
-                        yield (cls._number, match.group())
+                        yield (_TokenType.number, match.group())
                     except ValueError:
-                        yield (cls._name, match.group())
+                        yield (_TokenType.name, match.group())
                     pos += match.end()
                 else:
-                    yield (cls._delimiter, text[pos:pos + 1])
+                    yield (_TokenType.delimiter, text[pos:pos + 1])
                     pos += 1
 
     def _parse(self):
@@ -210,23 +202,23 @@ class Type1Font(object):
                 'UnderlinePosition': -100, 'UnderlineThickness': 50}
         filtered = ((token, value)
                     for token, value in self._tokens(self.parts[0])
-                    if token is not self._whitespace)
+                    if token is not _TokenType.whitespace)
         # The spec calls this an ASCII format; in Python 2.x we could
         # just treat the strings and names as opaque bytes but let's
         # turn them into proper Unicode, and be lenient in case of high bytes.
-        convert = lambda x: x.decode('ascii', 'replace')
+        def convert(x): return x.decode('ascii', 'replace')
         for token, value in filtered:
-            if token is self._name and value.startswith(b'/'):
+            if token is _TokenType.name and value.startswith(b'/'):
                 key = convert(value[1:])
                 token, value = next(filtered)
-                if token is self._name:
+                if token is _TokenType.name:
                     if value in (b'true', b'false'):
                         value = value == b'true'
                     else:
                         value = convert(value.lstrip(b'/'))
-                elif token is self._string:
+                elif token is _TokenType.string:
                     value = convert(value.lstrip(b'(').rstrip(b')'))
-                elif token is self._number:
+                elif token is _TokenType.number:
                     if b'.' in value:
                         value = float(value)
                     else:
@@ -244,7 +236,8 @@ class Type1Font(object):
         if 'FullName' not in prop:
             prop['FullName'] = prop['FontName']
         if 'FamilyName' not in prop:
-            extras = r'(?i)([ -](regular|plain|italic|oblique|(semi)?bold|(ultra)?light|extra|condensed))+$'
+            extras = ('(?i)([ -](regular|plain|italic|oblique|(semi)?bold|'
+                      '(ultra)?light|extra|condensed))+$')
             prop['FamilyName'] = re.sub(extras, '', prop['FullName'])
 
         self.prop = prop
@@ -254,16 +247,19 @@ class Type1Font(object):
         def fontname(name):
             result = name
             if slant:
-                result += b'_Slant_' + str(int(1000 * slant)).encode('latin-1')
+                result += b'_Slant_%d' % int(1000 * slant)
             if extend != 1.0:
-                result += b'_Extend_' + str(int(1000 * extend)).encode('latin-1')
+                result += b'_Extend_%d' % int(1000 * extend)
             return result
 
         def italicangle(angle):
-            return str(float(angle) - np.arctan(slant) / np.pi * 180).encode('latin-1')
+            return b'%a' % round(
+                float(angle) - np.arctan(slant) / np.pi * 180,
+                5
+            )
 
         def fontmatrix(array):
-            array = array.lstrip(b'[').rstrip(b']').strip().split()
+            array = array.lstrip(b'[').rstrip(b']').split()
             array = [float(x) for x in array]
             oldmatrix = np.eye(3, 3)
             oldmatrix[0:3, 0] = array[::2]
@@ -274,19 +270,20 @@ class Type1Font(object):
             newmatrix = np.dot(modifier, oldmatrix)
             array[::2] = newmatrix[0:3, 0]
             array[1::2] = newmatrix[0:3, 1]
-            as_string = u'[' + u' '.join(str(x) for x in array) + u']'
-            return as_string.encode('latin-1')
+            return (
+                '[%s]' % ' '.join(_format_approx(x, 6) for x in array)
+            ).encode('ascii')
 
         def replace(fun):
             def replacer(tokens):
                 token, value = next(tokens)      # name, e.g., /FontMatrix
-                yield bytes(value)
+                yield value
                 token, value = next(tokens)      # possible whitespace
-                while token is cls._whitespace:
-                    yield bytes(value)
+                while token is _TokenType.whitespace:
+                    yield value
                     token, value = next(tokens)
                 if value != b'[':                # name/number/etc.
-                    yield bytes(fun(value))
+                    yield fun(value)
                 else:                            # array, e.g., [1 2 3]
                     result = b''
                     while value != b']':
@@ -297,7 +294,7 @@ class Type1Font(object):
             return replacer
 
         def suppress(tokens):
-            for x in itertools.takewhile(lambda x: x[1] != b'def', tokens):
+            for _ in itertools.takewhile(lambda x: x[1] != b'def', tokens):
                 pass
             yield b''
 
@@ -306,28 +303,35 @@ class Type1Font(object):
                  b'/FontMatrix': replace(fontmatrix),
                  b'/UniqueID': suppress}
 
-        while True:
-            token, value = next(tokens)
-            if token is cls._name and value in table:
-                for value in table[value](itertools.chain([(token, value)],
-                                                          tokens)):
-                    yield value
+        for token, value in tokens:
+            if token is _TokenType.name and value in table:
+                yield from table[value](
+                    itertools.chain([(token, value)], tokens))
             else:
                 yield value
 
     def transform(self, effects):
         """
-        Transform the font by slanting or extending. *effects* should
-        be a dict where ``effects['slant']`` is the tangent of the
-        angle that the font is to be slanted to the right (so negative
-        values slant to the left) and ``effects['extend']`` is the
-        multiplier by which the font is to be extended (so values less
-        than 1.0 condense). Returns a new :class:`Type1Font` object.
+        Return a new font that is slanted and/or extended.
+
+        Parameters
+        ----------
+        effects : dict
+            A dict with optional entries:
+
+            - 'slant' : float, default: 0
+                Tangent of the angle that the font is to be slanted to the
+                right. Negative values slant to the left.
+            - 'extend' : float, default: 1
+                Scaling factor for the font width. Values less than 1 condense
+                the glyphs.
+
+        Returns
+        -------
+        `Type1Font`
         """
-        with io.BytesIO() as buffer:
-            tokenizer = self._tokens(self.parts[0])
-            transformed =  self._transformer(tokenizer,
-                                             slant=effects.get('slant', 0.0),
-                                             extend=effects.get('extend', 1.0))
-            list(map(buffer.write, transformed))
-            return Type1Font((buffer.getvalue(), self.parts[1], self.parts[2]))
+        tokenizer = self._tokens(self.parts[0])
+        transformed = self._transformer(tokenizer,
+                                        slant=effects.get('slant', 0.0),
+                                        extend=effects.get('extend', 1.0))
+        return Type1Font((b"".join(transformed), self.parts[1], self.parts[2]))

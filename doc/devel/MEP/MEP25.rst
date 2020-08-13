@@ -7,7 +7,9 @@ MEP25: Serialization
 Status
 ------
 
-**Discussion**
+**Rejected**
+
+This work is important, but this particular effort has stalled.
 
 Branches and Pull requests
 --------------------------
@@ -65,7 +67,7 @@ be able to query for it.
 
 Additional Notes:
 
-* The `raw data` does not necessarily need to be a ``list``,
+* The "raw data" does not necessarily need to be a ``list``,
   ``ndarray``, etc. Rather, it can more abstractly just have a method
   to yield data when needed.
 
@@ -126,7 +128,7 @@ Implementation
 
     * A simple NB demonstrating some functionality for
       ``Line2DController`` objects:
-      http://nbviewer.ipython.org/gist/theengineear/f0aa8d79f64325e767c0
+      https://nbviewer.jupyter.org/gist/theengineear/f0aa8d79f64325e767c0
 
 2. Write in protocols for the ``Controller`` to *update* the model.
 

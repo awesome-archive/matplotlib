@@ -1,12 +1,22 @@
+"""
+==================
+Demo Edge Colorbar
+==================
+
+This example shows how to use one common colorbar for each row or column
+of an image grid.
+"""
+
+from matplotlib import cbook
 import matplotlib.pyplot as plt
 from mpl_toolkits.axes_grid1 import AxesGrid
 
 
+plt.rcParams["mpl_toolkits.legacy_colorbar"] = False
+
+
 def get_demo_image():
-    import numpy as np
-    from matplotlib.cbook import get_sample_data
-    f = get_sample_data("axes_grid/bivariate_normal.npy", asfileobj=False)
-    z = np.load(f)
+    z = cbook.get_sample_data("axes_grid/bivariate_normal.npy", np_load=True)
     # z is a numpy array of 15x15
     return z, (-3, 4, -4, 3)
 
@@ -15,7 +25,7 @@ def demo_bottom_cbar(fig):
     """
     A grid of 2x2 images with a colorbar for each column.
     """
-    grid = AxesGrid(fig, 121,  # similar to subplot(132)
+    grid = AxesGrid(fig, 121,  # similar to subplot(121)
                     nrows_ncols=(2, 2),
                     axes_pad=0.10,
                     share_all=True,
@@ -30,10 +40,9 @@ def demo_bottom_cbar(fig):
     Z, extent = get_demo_image()
     cmaps = [plt.get_cmap("autumn"), plt.get_cmap("summer")]
     for i in range(4):
-        im = grid[i].imshow(Z, extent=extent, interpolation="nearest",
-                            cmap=cmaps[i//2])
+        im = grid[i].imshow(Z, extent=extent, cmap=cmaps[i//2])
         if i % 2:
-            cbar = grid.cbar_axes[i//2].colorbar(im)
+            grid.cbar_axes[i//2].colorbar(im)
 
     for cax in grid.cbar_axes:
         cax.toggle_label(True)
@@ -48,8 +57,7 @@ def demo_right_cbar(fig):
     """
     A grid of 2x2 images. Each row has its own colorbar.
     """
-
-    grid = AxesGrid(F, 122,  # similar to subplot(122)
+    grid = AxesGrid(fig, 122,  # similar to subplot(122)
                     nrows_ncols=(2, 2),
                     axes_pad=0.10,
                     label_mode="1",
@@ -62,8 +70,7 @@ def demo_right_cbar(fig):
     Z, extent = get_demo_image()
     cmaps = [plt.get_cmap("spring"), plt.get_cmap("winter")]
     for i in range(4):
-        im = grid[i].imshow(Z, extent=extent, interpolation="nearest",
-                            cmap=cmaps[i//2])
+        im = grid[i].imshow(Z, extent=extent, cmap=cmaps[i//2])
         if i % 2:
             grid.cbar_axes[i//2].colorbar(im)
 
@@ -76,13 +83,10 @@ def demo_right_cbar(fig):
     grid.axes_llc.set_yticks([-2, 0, 2])
 
 
-if 1:
-    F = plt.figure(1, (5.5, 2.5))
+fig = plt.figure(figsize=(5.5, 2.5))
+fig.subplots_adjust(left=0.05, right=0.93)
 
-    F.subplots_adjust(left=0.05, right=0.93)
+demo_bottom_cbar(fig)
+demo_right_cbar(fig)
 
-    demo_bottom_cbar(F)
-    demo_right_cbar(F)
-
-    plt.draw()
-    plt.show()
+plt.show()

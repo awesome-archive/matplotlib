@@ -1,23 +1,20 @@
-from matplotlib.backend_bases import FigureCanvasBase
-from matplotlib.backend_bases import RendererBase
-from matplotlib.testing.decorators import image_comparison, cleanup
+import re
 
+from matplotlib.backend_bases import (
+    FigureCanvasBase, LocationEvent, MouseButton, MouseEvent,
+    NavigationToolbar2, RendererBase)
 import matplotlib.pyplot as plt
 import matplotlib.transforms as transforms
 import matplotlib.path as path
-
-from nose.tools import assert_equal
-
-import numpy as np
 import os
-import shutil
-import tempfile
+import numpy as np
+import pytest
 
 
 def test_uses_per_path():
     id = transforms.Affine2D()
     paths = [path.Path.unit_regular_polygon(i) for i in range(3, 7)]
-    tforms = [id.rotate(i) for i in range(1, 5)]
+    tforms_matrices = [id.rotate(i).get_matrix().copy() for i in range(1, 5)]
     offsets = np.arange(20).reshape((10, 2))
     facecolors = ['red', 'green']
     edgecolors = ['red', 'green']
@@ -25,66 +22,138 @@ def test_uses_per_path():
     def check(master_transform, paths, all_transforms,
               offsets, facecolors, edgecolors):
         rb = RendererBase()
-        raw_paths = list(rb._iter_collection_raw_paths(master_transform,
-                                                       paths, all_transforms))
+        raw_paths = list(rb._iter_collection_raw_paths(
+            master_transform, paths, all_transforms))
         gc = rb.new_gc()
         ids = [path_id for xo, yo, path_id, gc0, rgbFace in
-               rb._iter_collection(gc, master_transform, all_transforms,
-                                   range(len(raw_paths)), offsets,
-                                   transforms.IdentityTransform(),
-                                   facecolors, edgecolors, [], [], [False],
-                                   [], 'data')]
+               rb._iter_collection(
+                   gc, master_transform, all_transforms,
+                   range(len(raw_paths)), offsets,
+                   transforms.AffineDeltaTransform(master_transform),
+                   facecolors, edgecolors, [], [], [False],
+                   [], 'screen')]
         uses = rb._iter_collection_uses_per_path(
             paths, all_transforms, offsets, facecolors, edgecolors)
-        seen = [0] * len(raw_paths)
-        for i in ids:
-            seen[i] += 1
-        for n in seen:
-            assert n in (uses-1, uses)
+        if raw_paths:
+            seen = np.bincount(ids, minlength=len(raw_paths))
+            assert set(seen).issubset([uses - 1, uses])
 
-    check(id, paths, tforms, offsets, facecolors, edgecolors)
-    check(id, paths[0:1], tforms, offsets, facecolors, edgecolors)
-    check(id, [], tforms, offsets, facecolors, edgecolors)
-    check(id, paths, tforms[0:1], offsets, facecolors, edgecolors)
+    check(id, paths, tforms_matrices, offsets, facecolors, edgecolors)
+    check(id, paths[0:1], tforms_matrices, offsets, facecolors, edgecolors)
+    check(id, [], tforms_matrices, offsets, facecolors, edgecolors)
+    check(id, paths, tforms_matrices[0:1], offsets, facecolors, edgecolors)
     check(id, paths, [], offsets, facecolors, edgecolors)
     for n in range(0, offsets.shape[0]):
-        check(id, paths, tforms, offsets[0:n, :], facecolors, edgecolors)
-    check(id, paths, tforms, offsets, [], edgecolors)
-    check(id, paths, tforms, offsets, facecolors, [])
-    check(id, paths, tforms, offsets, [], [])
-    check(id, paths, tforms, offsets, facecolors[0:1], edgecolors)
+        check(id, paths, tforms_matrices, offsets[0:n, :],
+              facecolors, edgecolors)
+    check(id, paths, tforms_matrices, offsets, [], edgecolors)
+    check(id, paths, tforms_matrices, offsets, facecolors, [])
+    check(id, paths, tforms_matrices, offsets, [], [])
+    check(id, paths, tforms_matrices, offsets, facecolors[0:1], edgecolors)
 
 
-@cleanup
-def test_get_default_filename():
-    try:
-        test_dir = tempfile.mkdtemp()
-        plt.rcParams['savefig.directory'] = test_dir
-        fig = plt.figure()
-        canvas = FigureCanvasBase(fig)
-        filename = canvas.get_default_filename()
-        assert_equal(filename, 'image.png')
-    finally:
-        shutil.rmtree(test_dir)
+def test_get_default_filename(tmpdir):
+    plt.rcParams['savefig.directory'] = str(tmpdir)
+    fig = plt.figure()
+    canvas = FigureCanvasBase(fig)
+    filename = canvas.get_default_filename()
+    assert filename == 'image.png'
 
 
-@cleanup
-def test_get_default_filename_already_exists():
-    # From #3068: Suggest non-existing default filename
-    try:
-        test_dir = tempfile.mkdtemp()
-        plt.rcParams['savefig.directory'] = test_dir
-        fig = plt.figure()
-        canvas = FigureCanvasBase(fig)
+def test_canvas_change():
+    fig = plt.figure()
+    # Replaces fig.canvas
+    canvas = FigureCanvasBase(fig)
+    # Should still work.
+    plt.close(fig)
+    assert not plt.fignum_exists(fig.number)
 
-        # create 'image.png' in figure's save dir
-        open(os.path.join(test_dir, 'image.png'), 'w').close()
 
-        filename = canvas.get_default_filename()
-        assert_equal(filename, 'image-1.png')
-    finally:
-        shutil.rmtree(test_dir)
+@pytest.mark.backend('pdf')
+def test_non_gui_warning(monkeypatch):
+    plt.subplots()
 
-if __name__ == "__main__":
-    import nose
-    nose.runmodule(argv=['-s', '--with-doctest'], exit=False)
+    monkeypatch.setitem(os.environ, "DISPLAY", ":999")
+
+    with pytest.warns(UserWarning) as rec:
+        plt.show()
+        assert len(rec) == 1
+        assert ('Matplotlib is currently using pdf, which is a non-GUI backend'
+                in str(rec[0].message))
+
+    with pytest.warns(UserWarning) as rec:
+        plt.gcf().show()
+        assert len(rec) == 1
+        assert ('Matplotlib is currently using pdf, which is a non-GUI backend'
+                in str(rec[0].message))
+
+
+@pytest.mark.parametrize(
+    "x, y", [(42, 24), (None, 42), (None, None), (200, 100.01), (205.75, 2.0)])
+def test_location_event_position(x, y):
+    # LocationEvent should cast its x and y arguments to int unless it is None.
+    fig, ax = plt.subplots()
+    canvas = FigureCanvasBase(fig)
+    event = LocationEvent("test_event", canvas, x, y)
+    if x is None:
+        assert event.x is None
+    else:
+        assert event.x == int(x)
+        assert isinstance(event.x, int)
+    if y is None:
+        assert event.y is None
+    else:
+        assert event.y == int(y)
+        assert isinstance(event.y, int)
+    if x is not None and y is not None:
+        assert re.match(
+            "x={} +y={}".format(ax.format_xdata(x), ax.format_ydata(y)),
+            ax.format_coord(x, y))
+        ax.fmt_xdata = ax.fmt_ydata = lambda x: "foo"
+        assert re.match("x=foo +y=foo", ax.format_coord(x, y))
+
+
+def test_interactive_zoom():
+    fig, ax = plt.subplots()
+    ax.set(xscale="logit")
+    assert ax.get_navigate_mode() is None
+
+    tb = NavigationToolbar2(fig.canvas)
+    tb.zoom()
+    assert ax.get_navigate_mode() == 'ZOOM'
+
+    xlim0 = ax.get_xlim()
+    ylim0 = ax.get_ylim()
+
+    # Zoom from x=1e-6, y=0.1 to x=1-1e-5, 0.8 (data coordinates, "d").
+    d0 = (1e-6, 0.1)
+    d1 = (1-1e-5, 0.8)
+    # Convert to screen coordinates ("s").  Events are defined only with pixel
+    # precision, so round the pixel values, and below, check against the
+    # corresponding xdata/ydata, which are close but not equal to d0/d1.
+    s0 = ax.transData.transform(d0).astype(int)
+    s1 = ax.transData.transform(d1).astype(int)
+
+    # Zoom in.
+    start_event = MouseEvent(
+        "button_press_event", fig.canvas, *s0, MouseButton.LEFT)
+    fig.canvas.callbacks.process(start_event.name, start_event)
+    stop_event = MouseEvent(
+        "button_release_event", fig.canvas, *s1, MouseButton.LEFT)
+    fig.canvas.callbacks.process(stop_event.name, stop_event)
+    assert ax.get_xlim() == (start_event.xdata, stop_event.xdata)
+    assert ax.get_ylim() == (start_event.ydata, stop_event.ydata)
+
+    # Zoom out.
+    start_event = MouseEvent(
+        "button_press_event", fig.canvas, *s1, MouseButton.RIGHT)
+    fig.canvas.callbacks.process(start_event.name, start_event)
+    stop_event = MouseEvent(
+        "button_release_event", fig.canvas, *s0, MouseButton.RIGHT)
+    fig.canvas.callbacks.process(stop_event.name, stop_event)
+    # Absolute tolerance much less than original xmin (1e-7).
+    assert ax.get_xlim() == pytest.approx(xlim0, rel=0, abs=1e-10)
+    assert ax.get_ylim() == pytest.approx(ylim0, rel=0, abs=1e-10)
+
+    tb.zoom()
+    assert ax.get_navigate_mode() is None

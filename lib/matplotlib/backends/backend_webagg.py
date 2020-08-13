@@ -1,8 +1,6 @@
 """
 Displays Agg images in the browser, with interactivity
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
 
 # The WebAgg backend is divided into two modules:
 #
@@ -13,109 +11,49 @@ from __future__ import (absolute_import, division, print_function,
 # - `backend_webagg.py` contains a concrete implementation of a basic
 #   application, implemented with tornado.
 
-import six
-
+from contextlib import contextmanager
 import errno
+from io import BytesIO
 import json
-import os
+import mimetypes
+from pathlib import Path
 import random
 import sys
 import signal
 import socket
 import threading
-from contextlib import contextmanager
 
 try:
     import tornado
-except ImportError:
-    raise RuntimeError("The WebAgg backend requires Tornado.")
+except ImportError as err:
+    raise RuntimeError("The WebAgg backend requires Tornado.") from err
 
 import tornado.web
 import tornado.ioloop
 import tornado.websocket
 
-import matplotlib
-from matplotlib import rcParams
-from matplotlib import backend_bases
-from matplotlib.figure import Figure
+import matplotlib as mpl
+from matplotlib.backend_bases import _Backend
 from matplotlib._pylab_helpers import Gcf
 from . import backend_webagg_core as core
 from .backend_webagg_core import TimerTornado
-
-
-def new_figure_manager(num, *args, **kwargs):
-    """
-    Create a new figure manager instance
-    """
-    FigureClass = kwargs.pop('FigureClass', Figure)
-    thisFig = FigureClass(*args, **kwargs)
-    return new_figure_manager_given_figure(num, thisFig)
-
-
-def new_figure_manager_given_figure(num, figure):
-    """
-    Create a new figure manager instance for the given figure.
-    """
-    canvas = FigureCanvasWebAgg(figure)
-    manager = core.FigureManagerWebAgg(canvas, num)
-    return manager
-
-
-def draw_if_interactive():
-    """
-    Is called after every pylab drawing command
-    """
-    if matplotlib.is_interactive():
-        figManager = Gcf.get_active()
-        if figManager is not None:
-            figManager.canvas.draw_idle()
-
-
-class Show(backend_bases.ShowBase):
-    def mainloop(self):
-        WebAggApplication.initialize()
-
-        url = "http://127.0.0.1:{port}{prefix}".format(
-            port=WebAggApplication.port,
-            prefix=WebAggApplication.url_prefix)
-
-        if rcParams['webagg.open_in_browser']:
-            import webbrowser
-            webbrowser.open(url)
-        else:
-            print("To view figure, visit {0}".format(url))
-
-        WebAggApplication.start()
-
-
-show = Show().mainloop
 
 
 class ServerThread(threading.Thread):
     def run(self):
         tornado.ioloop.IOLoop.instance().start()
 
+
 webagg_server_thread = ServerThread()
 
 
 class FigureCanvasWebAgg(core.FigureCanvasWebAggCore):
+    _timer_cls = TimerTornado
+
     def show(self):
         # show the figure window
+        global show  # placates pyflakes: created by @_Backend.export below
         show()
-
-    def new_timer(self, *args, **kwargs):
-        return TimerTornado(*args, **kwargs)
-
-    def start_event_loop(self, timeout):
-        backend_bases.FigureCanvasBase.start_event_loop_default(
-            self, timeout)
-    start_event_loop.__doc__ = \
-        backend_bases.FigureCanvasBase.start_event_loop_default.__doc__
-
-    def stop_event_loop(self):
-        backend_bases.FigureCanvasBase.stop_event_loop_default(self)
-    stop_event_loop.__doc__ = \
-        backend_bases.FigureCanvasBase.stop_event_loop_default.__doc__
 
 
 class WebAggApplication(tornado.web.Application):
@@ -124,20 +62,14 @@ class WebAggApplication(tornado.web.Application):
 
     class FavIcon(tornado.web.RequestHandler):
         def get(self):
-            image_path = os.path.join(
-                os.path.dirname(os.path.dirname(__file__)),
-                'mpl-data', 'images')
-
             self.set_header('Content-Type', 'image/png')
-            with open(os.path.join(image_path,
-                                   'matplotlib.png'), 'rb') as fd:
-                self.write(fd.read())
+            self.write(Path(mpl.get_data_path(),
+                            'images/matplotlib.png').read_bytes())
 
     class SingleFigurePage(tornado.web.RequestHandler):
-        def __init__(self, application, request, **kwargs):
-            self.url_prefix = kwargs.pop('url_prefix', '')
-            return tornado.web.RequestHandler.__init__(self, application,
-                                                       request, **kwargs)
+        def __init__(self, application, request, *, url_prefix='', **kwargs):
+            self.url_prefix = url_prefix
+            super().__init__(application, request, **kwargs)
 
         def get(self, fignum):
             fignum = int(fignum)
@@ -154,10 +86,9 @@ class WebAggApplication(tornado.web.Application):
                 canvas=manager.canvas)
 
     class AllFiguresPage(tornado.web.RequestHandler):
-        def __init__(self, application, request, **kwargs):
-            self.url_prefix = kwargs.pop('url_prefix', '')
-            return tornado.web.RequestHandler.__init__(self, application,
-                                                       request, **kwargs)
+        def __init__(self, application, request, *, url_prefix='', **kwargs):
+            self.url_prefix = url_prefix
+            super().__init__(application, request, **kwargs)
 
         def get(self):
             ws_uri = 'ws://{req.host}{prefix}/'.format(req=self.request,
@@ -166,8 +97,7 @@ class WebAggApplication(tornado.web.Application):
                 "all_figures.html",
                 prefix=self.url_prefix,
                 ws_uri=ws_uri,
-                figures=sorted(
-                    list(Gcf.figs.items()), key=lambda item: item[0]),
+                figures=sorted(Gcf.figs.items()),
                 toolitems=core.NavigationToolbar2WebAgg.toolitems)
 
     class MplJs(tornado.web.RequestHandler):
@@ -182,23 +112,10 @@ class WebAggApplication(tornado.web.Application):
         def get(self, fignum, fmt):
             fignum = int(fignum)
             manager = Gcf.get_fig_manager(fignum)
-
-            # TODO: Move this to a central location
-            mimetypes = {
-                'ps': 'application/postscript',
-                'eps': 'application/postscript',
-                'pdf': 'application/pdf',
-                'svg': 'image/svg+xml',
-                'png': 'image/png',
-                'jpeg': 'image/jpeg',
-                'tif': 'image/tiff',
-                'emf': 'application/emf'
-            }
-
-            self.set_header('Content-Type', mimetypes.get(fmt, 'binary'))
-
-            buff = six.BytesIO()
-            manager.canvas.print_figure(buff, format=fmt)
+            self.set_header(
+                'Content-Type', mimetypes.types_map.get(fmt, 'binary'))
+            buff = BytesIO()
+            manager.canvas.figure.savefig(buff, format=fmt)
             self.write(buff.getvalue())
 
     class WebSocket(tornado.websocket.WebSocketHandler):
@@ -245,14 +162,19 @@ class WebAggApplication(tornado.web.Application):
             assert url_prefix[0] == '/' and url_prefix[-1] != '/', \
                 'url_prefix must start with a "/" and not end with one.'
 
-        super(WebAggApplication, self).__init__(
+        super().__init__(
             [
                 # Static files for the CSS and JS
                 (url_prefix + r'/_static/(.*)',
                  tornado.web.StaticFileHandler,
                  {'path': core.FigureManagerWebAgg.get_static_file_path()}),
 
-                # An MPL favicon
+                # Static images for the toolbar
+                (url_prefix + r'/_images/(.*)',
+                 tornado.web.StaticFileHandler,
+                 {'path': Path(mpl.get_data_path(), 'images')}),
+
+                # A Matplotlib favicon
                 (url_prefix + r'/favicon.ico', self.FavIcon),
 
                 # The page that contains all of the pieces
@@ -276,7 +198,7 @@ class WebAggApplication(tornado.web.Application):
             template_path=core.FigureManagerWebAgg.get_static_file_path())
 
     @classmethod
-    def initialize(cls, url_prefix='', port=None):
+    def initialize(cls, url_prefix='', port=None, address=None):
         if cls.initialized:
             return
 
@@ -299,20 +221,22 @@ class WebAggApplication(tornado.web.Application):
             for i in range(n - 5):
                 yield port + random.randint(-2 * n, 2 * n)
 
-        success = None
-        cls.port = rcParams['webagg.port']
-        for port in random_ports(cls.port, rcParams['webagg.port_retries']):
+        if address is None:
+            cls.address = mpl.rcParams['webagg.address']
+        else:
+            cls.address = address
+        cls.port = mpl.rcParams['webagg.port']
+        for port in random_ports(cls.port,
+                                 mpl.rcParams['webagg.port_retries']):
             try:
-                app.listen(port)
+                app.listen(port, cls.address)
             except socket.error as e:
                 if e.errno != errno.EADDRINUSE:
                     raise
             else:
                 cls.port = port
-                success = True
                 break
-
-        if not success:
+        else:
             raise SystemExit(
                 "The webagg server could not be started because an available "
                 "port could not be found")
@@ -365,13 +289,9 @@ def ipython_inline_display(figure):
     if not webagg_server_thread.is_alive():
         webagg_server_thread.start()
 
-    with open(os.path.join(
-            core.FigureManagerWebAgg.get_static_file_path(),
-            'ipython_inline_figure.html')) as fd:
-        tpl = fd.read()
-
     fignum = figure.number
-
+    tpl = Path(core.FigureManagerWebAgg.get_static_file_path(),
+               "ipython_inline_figure.html").read_text()
     t = tornado.template.Template(tpl)
     return t.generate(
         prefix=WebAggApplication.url_prefix,
@@ -381,4 +301,29 @@ def ipython_inline_display(figure):
         port=WebAggApplication.port).decode('utf-8')
 
 
-FigureCanvas = FigureCanvasWebAgg
+@_Backend.export
+class _BackendWebAgg(_Backend):
+    FigureCanvas = FigureCanvasWebAgg
+    FigureManager = core.FigureManagerWebAgg
+
+    @staticmethod
+    def trigger_manager_draw(manager):
+        manager.canvas.draw_idle()
+
+    @staticmethod
+    def show():
+        WebAggApplication.initialize()
+
+        url = "http://{address}:{port}{prefix}".format(
+            address=WebAggApplication.address,
+            port=WebAggApplication.port,
+            prefix=WebAggApplication.url_prefix)
+
+        if mpl.rcParams['webagg.open_in_browser']:
+            import webbrowser
+            if not webbrowser.open(url):
+                print("To view figure, visit {0}".format(url))
+        else:
+            print("To view figure, visit {0}".format(url))
+
+        WebAggApplication.start()

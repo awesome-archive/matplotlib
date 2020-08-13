@@ -1,18 +1,12 @@
-"""Functions for Github API requests."""
-from __future__ import print_function
+"""Functions for GitHub API requests."""
 
-try:
-    input = raw_input
-except NameError:
-    pass
-
+import getpass
+import json
 import os
 import re
 import sys
 
 import requests
-import getpass
-import json
 
 try:
     import requests_cache
@@ -30,8 +24,8 @@ class Obj(dict):
     def __getattr__(self, name):
         try:
             return self[name]
-        except KeyError:
-            raise AttributeError(name)
+        except KeyError as err:
+            raise AttributeError(name) from err
 
     def __setattr__(self, name, val):
         self[name] = val
@@ -43,6 +37,13 @@ def get_auth_token():
     if token is not None:
         return token
 
+    try:
+        with open(os.path.join(os.path.expanduser('~'), '.ghoauth')) as f:
+            token, = f
+            return token
+    except Exception:
+        pass
+
     import keyring
     token = keyring.get_password('github', fake_username)
     if token is not None:
@@ -50,7 +51,7 @@ def get_auth_token():
 
     print("Please enter your github username and password. These are not "
            "stored, only used to get an oAuth token. You can revoke this at "
-           "any time on Github.")
+           "any time on GitHub.")
     user = input("Username: ")
     pw = getpass.getpass("Password: ")
 
@@ -70,7 +71,7 @@ def get_auth_token():
     return token
 
 def make_auth_header():
-    return {'Authorization': 'token ' + get_auth_token()}
+    return {'Authorization': 'token ' + get_auth_token().replace("\n","")}
 
 def post_issue_comment(project, num, body):
     url = 'https://api.github.com/repos/{project}/issues/{num}/comments'.format(project=project, num=num)
@@ -176,8 +177,7 @@ def get_milestone_id(project, milestone, auth=False, **params):
     for mstone in milestones:
         if mstone['title'] == milestone:
             return mstone['number']
-    else:
-        raise ValueError("milestone %s not found" % milestone)
+    raise ValueError("milestone %s not found" % milestone)
 
 def is_pull_request(issue):
     """Return True if the given issue is a pull request."""
@@ -200,11 +200,11 @@ def get_authors(pr):
 
 def iter_fields(fields):
     fields = fields.copy()
-    for key in ('key', 'acl', 'Filename', 'success_action_status', 'AWSAccessKeyId',
-        'Policy', 'Signature', 'Content-Type', 'file'):
-        yield (key, fields.pop(key))
-    for (k,v) in fields.items():
-        yield k,v
+    for key in [
+            'key', 'acl', 'Filename', 'success_action_status',
+            'AWSAccessKeyId', 'Policy', 'Signature', 'Content-Type', 'file']:
+        yield key, fields.pop(key)
+    yield from fields.items()
 
 def encode_multipart_formdata(fields, boundary=None):
     """
@@ -225,7 +225,7 @@ def encode_multipart_formdata(fields, boundary=None):
     # copy requests imports in here:
     from io import BytesIO
     from requests.packages.urllib3.filepost import (
-        choose_boundary, six, writer, b, get_content_type
+        choose_boundary, writer, b, get_content_type
     )
     body = BytesIO()
     if boundary is None:
@@ -248,7 +248,7 @@ def encode_multipart_formdata(fields, boundary=None):
 
         if isinstance(data, int):
             data = str(data)  # Backwards compatibility
-        if isinstance(data, six.text_type):
+        if isinstance(data, str):
             writer(body).write(data)
         else:
             body.write(data)

@@ -9,9 +9,6 @@ To generate a report for IPython 2.0, run:
 # Imports
 #-----------------------------------------------------------------------------
 
-from __future__ import print_function
-
-import codecs
 import sys
 
 from argparse import ArgumentParser
@@ -37,7 +34,7 @@ def round_hour(dt):
     return dt.replace(minute=0,second=0,microsecond=0)
 
 def _parse_datetime(s):
-    """Parse dates in the format returned by the Github API."""
+    """Parse dates in the format returned by the GitHub API."""
     if s:
         return datetime.strptime(s, ISO8601)
     else:
@@ -50,8 +47,8 @@ def issues2dict(issues):
         idict[i['number']] = i
     return idict
 
-def split_pulls(all_issues, project="ipython/ipython"):
-    """split a list of closed issues into non-PR Issues and Pull Requests"""
+def split_pulls(all_issues, project="matplotlib/matplotlib"):
+    """Split a list of closed issues into non-PR Issues and Pull Requests."""
     pulls = []
     issues = []
     for i in all_issues:
@@ -63,7 +60,7 @@ def split_pulls(all_issues, project="ipython/ipython"):
     return issues, pulls
 
 
-def issues_closed_since(period=timedelta(days=365), project="ipython/ipython", pulls=False):
+def issues_closed_since(period=timedelta(days=365), project="matplotlib/matplotlib", pulls=False):
     """Get all issues closed since a particular point in time. period
     can either be a datetime object, or a timedelta object. In the
     latter case, it is used as a time before the present.
@@ -77,7 +74,7 @@ def issues_closed_since(period=timedelta(days=365), project="ipython/ipython", p
         since = period
     url = "https://api.github.com/repos/%s/%s?state=closed&sort=updated&since=%s&per_page=%i" % (project, which, since.strftime(ISO8601), PER_PAGE)
     allclosed = get_paged_request(url, headers=make_auth_header())
-    
+
     filtered = [ i for i in allclosed if _parse_datetime(i['closed_at']) > since ]
     if pulls:
         filtered = [ i for i in filtered if _parse_datetime(i['merged_at']) > since ]
@@ -85,7 +82,7 @@ def issues_closed_since(period=timedelta(days=365), project="ipython/ipython", p
         filtered = [ i for i in filtered if i['base']['ref'] == 'master' ]
     else:
         filtered = [ i for i in filtered if not is_pull_request(i) ]
-    
+
     return filtered
 
 
@@ -99,24 +96,20 @@ def report(issues, show_urls=False):
     if show_urls:
         for i in issues:
             role = 'ghpull' if 'merged_at' in i else 'ghissue'
-            print(u'* :%s:`%d`: %s' % (role, i['number'],
-                                        i['title'].replace(u'`', u'``')))
+            print('* :%s:`%d`: %s' % (role, i['number'],
+                                      i['title'].replace('`', '``')))
     else:
         for i in issues:
-            print(u'* %d: %s' % (i['number'], i['title'].replace(u'`', u'``')))
+            print('* %d: %s' % (i['number'], i['title'].replace('`', '``')))
 
 #-----------------------------------------------------------------------------
 # Main script
 #-----------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    # deal with unicode
-    if sys.version_info < (3,):
-        sys.stdout = codecs.getwriter('utf8')(sys.stdout)
-    
     # Whether to add reST urls for all issues in printout.
     show_urls = True
-    
+
     parser = ArgumentParser()
     parser.add_argument('--since-tag', type=str,
         help="The git tag to use for the starting point (typically the last major release)."
@@ -127,16 +120,16 @@ if __name__ == "__main__":
     parser.add_argument('--days', type=int,
         help="The number of days of data to summarize (use this or --since-tag)."
     )
-    parser.add_argument('--project', type=str, default="ipython/ipython",
+    parser.add_argument('--project', type=str, default="matplotlib/matplotlib",
         help="The project to summarize."
     )
     parser.add_argument('--links', action='store_true', default=False,
         help="Include links to all closed Issues and PRs in the output."
     )
-    
+
     opts = parser.parse_args()
     tag = opts.since_tag
-    
+
     # set `since` from days or git tag
     if opts.days:
         since = datetime.utcnow() - timedelta(days=opts.days)
@@ -153,9 +146,9 @@ if __name__ == "__main__":
             since += td
         else:
             since -= td
-    
+
     since = round_hour(since)
-    
+
     milestone = opts.milestone
     project = opts.project
 
@@ -168,20 +161,24 @@ if __name__ == "__main__":
                 state='closed',
                 auth=True,
         )
-        issues, pulls = split_pulls(issues_and_pulls)
+        issues, pulls = split_pulls(issues_and_pulls, project=project)
     else:
         issues = issues_closed_since(since, project=project, pulls=False)
         pulls = issues_closed_since(since, project=project, pulls=True)
-    
+
     # For regular reports, it's nice to show them in reverse chronological order
     issues = sorted_by_field(issues, reverse=True)
     pulls = sorted_by_field(pulls, reverse=True)
-    
+
     n_issues, n_pulls = map(len, (issues, pulls))
     n_total = n_issues + n_pulls
-    
+
     # Print summary report we can directly include into release notes.
-    
+    print('.. _github-stats:')
+    print()
+    print('GitHub Stats')
+    print('============')
+
     print()
     since_day = since.strftime("%Y/%m/%d")
     today = datetime.today().strftime("%Y/%m/%d")
@@ -189,7 +186,7 @@ if __name__ == "__main__":
     print()
     print("These lists are automatically generated, and may be incomplete or contain duplicates.")
     print()
-    
+
     ncommits = 0
     all_authors = []
     if tag:
@@ -197,30 +194,30 @@ if __name__ == "__main__":
         since_tag = tag+'..'
         cmd = ['git', 'log', '--oneline', since_tag]
         ncommits += len(check_output(cmd).splitlines())
-        
+
         author_cmd = ['git', 'log', '--use-mailmap', "--format=* %aN", since_tag]
         all_authors.extend(check_output(author_cmd).decode('utf-8', 'replace').splitlines())
-    
+
     pr_authors = []
     for pr in pulls:
         pr_authors.extend(get_authors(pr))
     ncommits = len(pr_authors) + ncommits - len(pulls)
     author_cmd = ['git', 'check-mailmap'] + pr_authors
     with_email = check_output(author_cmd).decode('utf-8', 'replace').splitlines()
-    all_authors.extend([ u'* ' + a.split(' <')[0] for a in with_email ])
+    all_authors.extend(['* ' + a.split(' <')[0] for a in with_email])
     unique_authors = sorted(set(all_authors), key=lambda s: s.lower())
 
     print("We closed %d issues and merged %d pull requests." % (n_issues, n_pulls))
     if milestone:
-        print("The full list can be seen `on GitHub <https://github.com/%s/milestone/%s>`__"
-            % (project, milestone)
+        print("The full list can be seen `on GitHub <https://github.com/%s/milestone/%s?closed=1>`__"
+            % (project, milestone_id)
         )
-    
+
     print()
     print("The following %i authors contributed %i commits." % (len(unique_authors), ncommits))
     print()
     print('\n'.join(unique_authors))
-    
+
     if opts.links:
         print()
         print("GitHub issues and pull requests:")
@@ -230,3 +227,17 @@ if __name__ == "__main__":
         print()
         print('Issues (%d):\n' % n_issues)
         report(issues, show_urls)
+    print()
+    print()
+    print("""Previous GitHub Stats
+---------------------
+
+
+.. toctree::
+    :maxdepth: 1
+    :glob:
+    :reversed:
+
+    prev_whats_new/github_stats_*
+
+""")

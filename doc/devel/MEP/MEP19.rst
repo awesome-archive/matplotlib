@@ -5,7 +5,7 @@
 Status
 ======
 
-**Discussion**
+**Completed**
 
 Branches and Pull requests
 ==========================
@@ -34,7 +34,7 @@ has a number of shortcomings:
 - It often fails for inexplicable reasons.
 
 - build or test products can only be saved from build off of branches
-  on the main repo, not pull requsts, so it is often difficult to
+  on the main repo, not pull requests, so it is often difficult to
   "post mortem" analyse what went wrong.  This is particularly
   frustrating when the failure can not be subsequently reproduced
   locally.
@@ -90,7 +90,7 @@ Requirements
 
 This section outlines the requirements that we would like to have.
 
-#. Testing all pull requests by hooking into the Github API, as
+#. Testing all pull requests by hooking into the GitHub API, as
    Travis-CI does
 
 #. Testing on all major platforms: Linux, Mac OS-X, MS Windows (in
@@ -114,7 +114,7 @@ This section outlines the requirements that we would like to have.
    (This would not replace the static documentation for stable
    releases as a default).
 
-#. The test systems should be managable by multiple developers, so
+#. The test systems should be manageable by multiple developers, so
    that no single person becomes a bottleneck.  (Travis-CI's design
    does this well -- storing build configuration in the git
    repository, rather than elsewhere, is a very good design.)
@@ -122,7 +122,7 @@ This section outlines the requirements that we would like to have.
 #. Make it easy to test a large but sparse matrix of different
    versions of matplotlib's dependencies.  The matplotlib user survey
    provides some good data as to where to focus our efforts:
-   https://docs.google.com/spreadsheet/ccc?key=0AjrPjlTMRTwTdHpQS25pcTZIRWdqX0pNckNSU01sMHc#gid=0
+   https://docs.google.com/spreadsheet/ccc?key=0AjrPjlTMRTwTdHpQS25pcTZIRWdqX0pNckNSU01sMHc
 
 #. Nice to have: A decentralized design so that those with more
    obscure platforms can publish build results to a central dashboard.
@@ -169,7 +169,7 @@ CI Infrastructure
 
 - Investigate finding or building a tool that would collect and
   synthesize test results from a number of sources and post it to
-  Github using the Github API.  This may be of general use to the
+  GitHub using the GitHub API.  This may be of general use to the
   Scipy community.
 
 - For both Windows and Mac, we should document (or better yet, script)

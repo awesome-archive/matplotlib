@@ -9,35 +9,34 @@ Interface::
       # iterate over pages:
       for page in dvi:
           w, h, d = page.width, page.height, page.descent
-          for x,y,font,glyph,width in page.text:
+          for x, y, font, glyph, width in page.text:
               fontname = font.texname
               pointsize = font.size
               ...
-          for x,y,height,width in page.boxes:
+          for x, y, height, width in page.boxes:
               ...
-
 """
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-
-import six
-from six.moves import xrange
 
 from collections import namedtuple
-import errno
-from functools import partial, wraps
-import matplotlib
-import matplotlib.cbook as mpl_cbook
-from matplotlib.compat import subprocess
-from matplotlib import rcParams
-import numpy as np
+import enum
+from functools import lru_cache, partial, wraps
+import logging
+import os
+from pathlib import Path
+import re
 import struct
 import sys
-import os
+import textwrap
 
-if six.PY3:
-    def ord(x):
-        return x
+import numpy as np
+
+from matplotlib import cbook, rcParams
+
+_log = logging.getLogger(__name__)
+
+# Many dvi related files are looked for by external processes, require
+# additional parsing, and are used many times per rendering, which is why they
+# are cached using lru_cache().
 
 # Dvi is a bytecode format documented in
 # http://mirrors.ctan.org/systems/knuth/dist/texware/dvitype.web
@@ -55,7 +54,7 @@ if six.PY3:
 #              just stops reading)
 #   finale:    the finale (unimplemented in our current implementation)
 
-_dvistate = mpl_cbook.Bunch(pre=0, outer=1, inpage=2, post_post=3, finale=4)
+_dvistate = enum.Enum('DviState', 'pre outer inpage post_post finale')
 
 # The marks on a page consist of text and boxes. A page also has dimensions.
 Page = namedtuple('Page', 'text boxes height width descent')
@@ -71,45 +70,55 @@ Box = namedtuple('Box', 'x y height width')
 # argument bytes in this delta.
 
 def _arg_raw(dvi, delta):
-    """Return *delta* without reading anything more from the dvi file"""
+    """Return *delta* without reading anything more from the dvi file."""
     return delta
 
 
-def _arg(bytes, signed, dvi, _):
-    """Read *bytes* bytes, returning the bytes interpreted as a
-    signed integer if *signed* is true, unsigned otherwise."""
-    return dvi._arg(bytes, signed)
+def _arg(nbytes, signed, dvi, _):
+    """
+    Read *nbytes* bytes, returning the bytes interpreted as a signed integer
+    if *signed* is true, unsigned otherwise.
+    """
+    return dvi._arg(nbytes, signed)
 
 
 def _arg_slen(dvi, delta):
-    """Signed, length *delta*
+    """
+    Signed, length *delta*
 
-    Read *delta* bytes, returning None if *delta* is zero, and
-    the bytes interpreted as a signed integer otherwise."""
+    Read *delta* bytes, returning None if *delta* is zero, and the bytes
+    interpreted as a signed integer otherwise.
+    """
     if delta == 0:
         return None
     return dvi._arg(delta, True)
 
 
 def _arg_slen1(dvi, delta):
-    """Signed, length *delta*+1
+    """
+    Signed, length *delta*+1
 
-    Read *delta*+1 bytes, returning the bytes interpreted as signed."""
+    Read *delta*+1 bytes, returning the bytes interpreted as signed.
+    """
     return dvi._arg(delta+1, True)
 
 
 def _arg_ulen1(dvi, delta):
-    """Unsigned length *delta*+1
+    """
+    Unsigned length *delta*+1
 
-    Read *delta*+1 bytes, returning the bytes interpreted as unsigned."""
+    Read *delta*+1 bytes, returning the bytes interpreted as unsigned.
+    """
     return dvi._arg(delta+1, False)
 
 
 def _arg_olen1(dvi, delta):
-    """Optionally signed, length *delta*+1
+    """
+    Optionally signed, length *delta*+1
 
     Read *delta*+1 bytes, returning the bytes interpreted as
-    unsigned integer for 0<=*delta*<3 and signed if *delta*==3."""
+    unsigned integer for 0<=*delta*<3 and signed if *delta*==3.
+    """
     return dvi._arg(delta + 1, delta == 3)
 
 
@@ -124,7 +133,8 @@ _arg_mapping = dict(raw=_arg_raw,
 
 
 def _dispatch(table, min, max=None, state=None, args=('raw',)):
-    """Decorator for dispatch by opcode. Sets the values in *table*
+    """
+    Decorator for dispatch by opcode. Sets the values in *table*
     from *min* to *max* to this method, adds a check that the Dvi state
     matches *state* if not None, reads arguments from the file according
     to *args*.
@@ -165,14 +175,14 @@ def _dispatch(table, min, max=None, state=None, args=('raw',)):
         if max is None:
             table[min] = wrapper
         else:
-            for i in xrange(min, max+1):
+            for i in range(min, max+1):
                 assert table[i] is None
                 table[i] = wrapper
         return wrapper
     return decorate
 
 
-class Dvi(object):
+class Dvi:
     """
     A reader for a dvi ("device-independent") file, as produced by TeX.
     The current implementation can only iterate through pages in order,
@@ -182,13 +192,13 @@ class Dvi(object):
     file upon exit. Pages can be read via iteration. Here is an overly
     simple way to extract text without trying to detect whitespace::
 
-    >>> with matplotlib.dviread.Dvi('input.dvi', 72) as dvi:
-    >>>     for page in dvi:
-    >>>         print ''.join(unichr(t.glyph) for t in page.text)
+        >>> with matplotlib.dviread.Dvi('input.dvi', 72) as dvi:
+        ...     for page in dvi:
+        ...         print(''.join(chr(t.glyph) for t in page.text))
     """
     # dispatch table
-    _dtable = [None for _ in xrange(256)]
-    dispatch = partial(_dispatch, _dtable)
+    _dtable = [None] * 256
+    _dispatch = partial(_dispatch, _dtable)
 
     def __init__(self, filename, dpi):
         """
@@ -197,7 +207,7 @@ class Dvi(object):
         *dpi* only sets the units and does not limit the resolution.
         Use None to return TeX's internal units.
         """
-        matplotlib.verbose.report('Dvi: ' + filename, 'debug')
+        _log.debug('Dvi: %s', filename)
         self.file = open(filename, 'rb')
         self.dpi = dpi
         self.fonts = {}
@@ -205,47 +215,44 @@ class Dvi(object):
         self.baseline = self._get_baseline(filename)
 
     def _get_baseline(self, filename):
-        if rcParams['text.latex.preview']:
-            base, ext = os.path.splitext(filename)
-            baseline_filename = base + ".baseline"
-            if os.path.exists(baseline_filename):
-                with open(baseline_filename, 'rb') as fd:
-                    l = fd.read().split()
-                height, depth, width = l
+        if dict.__getitem__(rcParams, 'text.latex.preview'):
+            baseline = Path(filename).with_suffix(".baseline")
+            if baseline.exists():
+                height, depth, width = baseline.read_bytes().split()
                 return float(depth)
         return None
 
     def __enter__(self):
+        """Context manager enter method, does nothing."""
         return self
 
     def __exit__(self, etype, evalue, etrace):
+        """
+        Context manager exit method, closes the underlying file if it is open.
+        """
         self.close()
 
     def __iter__(self):
         """
         Iterate through the pages of the file.
 
-        Returns (text, boxes) pairs, where:
-          text is a list of (x, y, fontnum, glyphnum, width) tuples
-          boxes is a list of (x, y, height, width) tuples
-
-        The coordinates are transformed into a standard Cartesian
-        coordinate system at the dpi value given when initializing.
-        The coordinates are floating point numbers, but otherwise
-        precision is not lost and coordinate values are not clipped to
-        integers.
+        Yields
+        ------
+        Page
+            Details of all the text and box objects on the page.
+            The Page tuple contains lists of Text and Box tuples and
+            the page dimensions, and the Text and Box tuples contain
+            coordinates transformed into a standard Cartesian
+            coordinate system at the dpi value given when initializing.
+            The coordinates are floating point numbers, but otherwise
+            precision is not lost and coordinate values are not clipped to
+            integers.
         """
-        while True:
-            have_page = self._read()
-            if have_page:
-                yield self._output()
-            else:
-                break
+        while self._read():
+            yield self._output()
 
     def close(self):
-        """
-        Close the underlying file if it is open.
-        """
+        """Close the underlying file if it is open."""
         if not self.file.closed:
             self.file.close()
 
@@ -268,6 +275,12 @@ class Dvi(object):
             maxx = max(maxx, x + w)
             maxy = max(maxy, y + e)
             maxy_pure = max(maxy_pure, y)
+        if self._baseline_v is not None:
+            maxy_pure = self._baseline_v  # This should normally be the case.
+            self._baseline_v = None
+
+        if not self.text and not self.boxes:  # Avoid infs/nans from inf+/-inf.
+            return Page(text=[], boxes=[], width=0, height=0, descent=0)
 
         if self.dpi is None:
             # special case for ease of debugging: output raw dvi coordinates
@@ -295,12 +308,27 @@ class Dvi(object):
         Read one page from the file. Return True if successful,
         False if there were no more pages.
         """
+        # Pages appear to start with the sequence
+        #   bop (begin of page)
+        #   xxx comment
+        #   down
+        #   push
+        #     down, down
+        #     push
+        #       down (possibly multiple)
+        #       push  <=  here, v is the baseline position.
+        #         etc.
+        # (dviasm is useful to explore this structure.)
+        self._baseline_v = None
         while True:
-            byte = ord(self.file.read(1)[0])
+            byte = self.file.read(1)[0]
             self._dtable[byte](self, byte)
+            if (self._baseline_v is None
+                    and len(getattr(self, "stack", [])) == 3):
+                self._baseline_v = self.v
             if byte == 140:                         # end of page
                 return True
-            if self.state == _dvistate.post_post:   # end of file
+            if self.state is _dvistate.post_post:   # end of file
                 self.close()
                 return False
 
@@ -309,30 +337,30 @@ class Dvi(object):
         Read and return an integer argument *nbytes* long.
         Signedness is determined by the *signed* keyword.
         """
-        str = self.file.read(nbytes)
-        value = ord(str[0])
+        buf = self.file.read(nbytes)
+        value = buf[0]
         if signed and value >= 0x80:
             value = value - 0x100
-        for i in range(1, nbytes):
-            value = 0x100*value + ord(str[i])
+        for b in buf[1:]:
+            value = 0x100*value + b
         return value
 
-    @dispatch(min=0, max=127, state=_dvistate.inpage)
+    @_dispatch(min=0, max=127, state=_dvistate.inpage)
     def _set_char_immediate(self, char):
         self._put_char_real(char)
         self.h += self.fonts[self.f]._width_of(char)
 
-    @dispatch(min=128, max=131, state=_dvistate.inpage, args=('olen1',))
+    @_dispatch(min=128, max=131, state=_dvistate.inpage, args=('olen1',))
     def _set_char(self, char):
         self._put_char_real(char)
         self.h += self.fonts[self.f]._width_of(char)
 
-    @dispatch(132, state=_dvistate.inpage, args=('s4', 's4'))
+    @_dispatch(132, state=_dvistate.inpage, args=('s4', 's4'))
     def _set_rule(self, a, b):
         self._put_rule_real(a, b)
         self.h += b
 
-    @dispatch(min=133, max=136, state=_dvistate.inpage, args=('olen1',))
+    @_dispatch(min=133, max=136, state=_dvistate.inpage, args=('olen1',))
     def _put_char(self, char):
         self._put_char_real(char)
 
@@ -354,7 +382,7 @@ class Dvi(object):
                                    _mul2012(a, scale), _mul2012(b, scale))
                                for x, y, a, b in font._vf[char].boxes])
 
-    @dispatch(137, state=_dvistate.inpage, args=('s4', 's4'))
+    @_dispatch(137, state=_dvistate.inpage, args=('s4', 's4'))
     def _put_rule(self, a, b):
         self._put_rule_real(a, b)
 
@@ -362,11 +390,11 @@ class Dvi(object):
         if a > 0 and b > 0:
             self.boxes.append(Box(self.h, self.v, a, b))
 
-    @dispatch(138)
+    @_dispatch(138)
     def _nop(self, _):
         pass
 
-    @dispatch(139, state=_dvistate.outer, args=('s4',)*11)
+    @_dispatch(139, state=_dvistate.outer, args=('s4',)*11)
     def _bop(self, c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, p):
         self.state = _dvistate.inpage
         self.h, self.v, self.w, self.x, self.y, self.z = 0, 0, 0, 0, 0, 0
@@ -374,75 +402,68 @@ class Dvi(object):
         self.text = []          # list of Text objects
         self.boxes = []         # list of Box objects
 
-    @dispatch(140, state=_dvistate.inpage)
+    @_dispatch(140, state=_dvistate.inpage)
     def _eop(self, _):
         self.state = _dvistate.outer
         del self.h, self.v, self.w, self.x, self.y, self.z, self.stack
 
-    @dispatch(141, state=_dvistate.inpage)
+    @_dispatch(141, state=_dvistate.inpage)
     def _push(self, _):
         self.stack.append((self.h, self.v, self.w, self.x, self.y, self.z))
 
-    @dispatch(142, state=_dvistate.inpage)
+    @_dispatch(142, state=_dvistate.inpage)
     def _pop(self, _):
         self.h, self.v, self.w, self.x, self.y, self.z = self.stack.pop()
 
-    @dispatch(min=143, max=146, state=_dvistate.inpage, args=('slen1',))
+    @_dispatch(min=143, max=146, state=_dvistate.inpage, args=('slen1',))
     def _right(self, b):
         self.h += b
 
-    @dispatch(min=147, max=151, state=_dvistate.inpage, args=('slen',))
+    @_dispatch(min=147, max=151, state=_dvistate.inpage, args=('slen',))
     def _right_w(self, new_w):
         if new_w is not None:
             self.w = new_w
         self.h += self.w
 
-    @dispatch(min=152, max=156, state=_dvistate.inpage, args=('slen',))
+    @_dispatch(min=152, max=156, state=_dvistate.inpage, args=('slen',))
     def _right_x(self, new_x):
         if new_x is not None:
             self.x = new_x
         self.h += self.x
 
-    @dispatch(min=157, max=160, state=_dvistate.inpage, args=('slen1',))
+    @_dispatch(min=157, max=160, state=_dvistate.inpage, args=('slen1',))
     def _down(self, a):
         self.v += a
 
-    @dispatch(min=161, max=165, state=_dvistate.inpage, args=('slen',))
+    @_dispatch(min=161, max=165, state=_dvistate.inpage, args=('slen',))
     def _down_y(self, new_y):
         if new_y is not None:
             self.y = new_y
         self.v += self.y
 
-    @dispatch(min=166, max=170, state=_dvistate.inpage, args=('slen',))
+    @_dispatch(min=166, max=170, state=_dvistate.inpage, args=('slen',))
     def _down_z(self, new_z):
         if new_z is not None:
             self.z = new_z
         self.v += self.z
 
-    @dispatch(min=171, max=234, state=_dvistate.inpage)
+    @_dispatch(min=171, max=234, state=_dvistate.inpage)
     def _fnt_num_immediate(self, k):
         self.f = k
 
-    @dispatch(min=235, max=238, state=_dvistate.inpage, args=('olen1',))
+    @_dispatch(min=235, max=238, state=_dvistate.inpage, args=('olen1',))
     def _fnt_num(self, new_f):
         self.f = new_f
 
-    @dispatch(min=239, max=242, args=('ulen1',))
+    @_dispatch(min=239, max=242, args=('ulen1',))
     def _xxx(self, datalen):
         special = self.file.read(datalen)
-        if six.PY3:
-            chr_ = chr
-        else:
-            def chr_(x):
-                return x
-        matplotlib.verbose.report(
-            'Dvi._xxx: encountered special: %s'
-            % ''.join([(32 <= ord(ch) < 127) and chr_(ch)
-                       or '<%02x>' % ord(ch)
-                       for ch in special]),
-            'debug')
+        _log.debug(
+            'Dvi._xxx: encountered special: %s',
+            ''.join([chr(ch) if 32 <= ch < 127 else '<%02x>' % ch
+                     for ch in special]))
 
-    @dispatch(min=243, max=246, args=('olen1', 'u4', 'u4', 'u4', 'u1', 'u1'))
+    @_dispatch(min=243, max=246, args=('olen1', 'u4', 'u4', 'u4', 'u1', 'u1'))
     def _fnt_def(self, k, c, s, d, a, l):
         self._fnt_def_real(k, c, s, d, a, l)
 
@@ -451,11 +472,7 @@ class Dvi(object):
         fontname = n[-l:].decode('ascii')
         tfm = _tfmfile(fontname)
         if tfm is None:
-            if six.PY2:
-                error_class = OSError
-            else:
-                error_class = FileNotFoundError
-            raise error_class("missing font metrics file: %s" % fontname)
+            raise FileNotFoundError("missing font metrics file: %s" % fontname)
         if c != 0 and tfm.checksum != 0 and c != tfm.checksum:
             raise ValueError('tfm checksum mismatch: %s' % n)
 
@@ -463,62 +480,71 @@ class Dvi(object):
 
         self.fonts[k] = DviFont(scale=s, tfm=tfm, texname=n, vf=vf)
 
-    @dispatch(247, state=_dvistate.pre, args=('u1', 'u4', 'u4', 'u4', 'u1'))
+    @_dispatch(247, state=_dvistate.pre, args=('u1', 'u4', 'u4', 'u4', 'u1'))
     def _pre(self, i, num, den, mag, k):
-        comment = self.file.read(k)
+        self.file.read(k)  # comment in the dvi file
         if i != 2:
             raise ValueError("Unknown dvi format %d" % i)
         if num != 25400000 or den != 7227 * 2**16:
-            raise ValueError("nonstandard units in dvi file")
+            raise ValueError("Nonstandard units in dvi file")
             # meaning: TeX always uses those exact values, so it
             # should be enough for us to support those
             # (There are 72.27 pt to an inch so 7227 pt =
             # 7227 * 2**16 sp to 100 in. The numerator is multiplied
             # by 10^5 to get units of 10**-7 meters.)
         if mag != 1000:
-            raise ValueError("nonstandard magnification in dvi file")
+            raise ValueError("Nonstandard magnification in dvi file")
             # meaning: LaTeX seems to frown on setting \mag, so
             # I think we can assume this is constant
         self.state = _dvistate.outer
 
-    @dispatch(248, state=_dvistate.outer)
+    @_dispatch(248, state=_dvistate.outer)
     def _post(self, _):
         self.state = _dvistate.post_post
         # TODO: actually read the postamble and finale?
         # currently post_post just triggers closing the file
 
-    @dispatch(249)
+    @_dispatch(249)
     def _post_post(self, _):
         raise NotImplementedError
 
-    @dispatch(min=250, max=255)
+    @_dispatch(min=250, max=255)
     def _malformed(self, offset):
-        raise ValueError("unknown command: byte %d", 250 + offset)
+        raise ValueError(f"unknown command: byte {250 + offset}")
 
 
-class DviFont(object):
+class DviFont:
     """
-    Object that holds a font's texname and size, supports comparison,
+    Encapsulation of a font that a DVI file can refer to.
+
+    This class holds a font's texname and size, supports comparison,
     and knows the widths of glyphs in the same units as the AFM file.
     There are also internal attributes (for use by dviread.py) that
     are *not* used for comparison.
 
     The size is in Adobe points (converted from TeX points).
 
-    .. attribute:: texname
+    Parameters
+    ----------
+    scale : float
+        Factor by which the font is scaled from its natural size.
+    tfm : Tfm
+        TeX font metrics for this font
+    texname : bytes
+       Name of the font as used internally by TeX and friends, as an
+       ASCII bytestring. This is usually very different from any external
+       font names, and :class:`dviread.PsfontsMap` can be used to find
+       the external name of the font.
+    vf : Vf
+       A TeX "virtual font" file, or None if this font is not virtual.
 
-       Name of the font as used internally by TeX and friends. This
-       is usually very different from any external font names, and
-       :class:`dviread.PsfontsMap` can be used to find the external
-       name of the font.
-
-    .. attribute:: size
-
+    Attributes
+    ----------
+    texname : bytes
+    size : float
        Size of the font in Adobe points, converted from the slightly
        smaller TeX points.
-
-    .. attribute:: widths
-
+    widths : list
        Widths of glyphs in glyph-space units, typically 1/1000ths of
        the point size.
 
@@ -526,78 +552,85 @@ class DviFont(object):
     __slots__ = ('texname', 'size', 'widths', '_scale', '_vf', '_tfm')
 
     def __init__(self, scale, tfm, texname, vf):
-        if six.PY3 and isinstance(texname, bytes):
-            texname = texname.decode('ascii')
-        self._scale, self._tfm, self.texname, self._vf = \
-            scale, tfm, texname, vf
+        cbook._check_isinstance(bytes, texname=texname)
+        self._scale = scale
+        self._tfm = tfm
+        self.texname = texname
+        self._vf = vf
         self.size = scale * (72.0 / (72.27 * 2**16))
         try:
-            nchars = max(six.iterkeys(tfm.width)) + 1
+            nchars = max(tfm.width) + 1
         except ValueError:
             nchars = 0
         self.widths = [(1000*tfm.width.get(char, 0)) >> 20
-                       for char in xrange(nchars)]
+                       for char in range(nchars)]
 
     def __eq__(self, other):
-        return self.__class__ == other.__class__ and \
-            self.texname == other.texname and self.size == other.size
+        return (type(self) == type(other)
+                and self.texname == other.texname and self.size == other.size)
 
     def __ne__(self, other):
         return not self.__eq__(other)
 
-    def _width_of(self, char):
-        """
-        Width of char in dvi units. For internal use by dviread.py.
-        """
+    def __repr__(self):
+        return "<{}: {}>".format(type(self).__name__, self.texname)
 
+    def _width_of(self, char):
+        """Width of char in dvi units."""
         width = self._tfm.width.get(char, None)
         if width is not None:
             return _mul2012(width, self._scale)
-
-        matplotlib.verbose.report(
-            'No width for char %d in font %s' % (char, self.texname),
-            'debug')
+        _log.debug('No width for char %d in font %s.', char, self.texname)
         return 0
 
     def _height_depth_of(self, char):
-        """
-        Height and depth of char in dvi units. For internal use by dviread.py.
-        """
-
+        """Height and depth of char in dvi units."""
         result = []
         for metric, name in ((self._tfm.height, "height"),
                              (self._tfm.depth, "depth")):
             value = metric.get(char, None)
             if value is None:
-                matplotlib.verbose.report(
-                    'No %s for char %d in font %s' % (
-                        name, char, self.texname),
-                    'debug')
+                _log.debug('No %s for char %d in font %s',
+                           name, char, self.texname)
                 result.append(0)
             else:
                 result.append(_mul2012(value, self._scale))
+        # cmsyXX (symbols font) glyph 0 ("minus") has a nonzero descent
+        # so that TeX aligns equations properly
+        # (https://tex.stackexchange.com/questions/526103/),
+        # but we actually care about the rasterization depth to align
+        # the dvipng-generated images.
+        if re.match(br'^cmsy\d+$', self.texname) and char == 0:
+            result[-1] = 0
         return result
 
 
-# The virtual font format is a derivative of dvi:
-# http://mirrors.ctan.org/info/knuth/virtual-fonts
-# The following class reuses some of the machinery of Dvi
-# but replaces the _read loop and dispatch mechanism.
-
-
 class Vf(Dvi):
-    """
+    r"""
     A virtual font (\*.vf file) containing subroutines for dvi files.
 
-    Usage::
+    Parameters
+    ----------
+    filename : str or path-like
 
-      vf = Vf(filename)
-      glyph = vf[code]
-      glyph.text, glyph.boxes, glyph.width
+    Notes
+    -----
+    The virtual font format is a derivative of dvi:
+    http://mirrors.ctan.org/info/knuth/virtual-fonts
+    This class reuses some of the machinery of `Dvi`
+    but replaces the `_read` loop and dispatch mechanism.
+
+    Examples
+    --------
+    ::
+
+        vf = Vf(filename)
+        glyph = vf[code]
+        glyph.text, glyph.boxes, glyph.width
     """
 
     def __init__(self, filename):
-        Dvi.__init__(self, filename, 0)
+        super().__init__(filename, 0)
         try:
             self._first_font = None
             self._chars = {}
@@ -613,11 +646,12 @@ class Vf(Dvi):
         Read one page from the file. Return True if successful,
         False if there were no more pages.
         """
-        packet_len, packet_char, packet_width = None, None, None
+        packet_char, packet_ends = None, None
+        packet_len, packet_width = None, None
         while True:
-            byte = ord(self.file.read(1)[0])
+            byte = self.file.read(1)[0]
             # If we are in a packet, execute the dvi instructions
-            if self.state == _dvistate.inpage:
+            if self.state is _dvistate.inpage:
                 byte_at = self.file.tell()-1
                 if byte_at == packet_ends:
                     self._finalize_packet(packet_char, packet_width)
@@ -656,7 +690,7 @@ class Vf(Dvi):
             elif byte == 248:       # postamble (just some number of 248s)
                 break
             else:
-                raise ValueError("unknown vf opcode %d" % byte)
+                raise ValueError("Unknown vf opcode %d" % byte)
 
     def _init_packet(self, pl):
         if self.state != _dvistate.outer:
@@ -673,20 +707,18 @@ class Vf(Dvi):
         self.state = _dvistate.outer
 
     def _pre(self, i, x, cs, ds):
-        if self.state != _dvistate.pre:
+        if self.state is not _dvistate.pre:
             raise ValueError("pre command in middle of vf file")
         if i != 202:
             raise ValueError("Unknown vf format %d" % i)
         if len(x):
-            matplotlib.verbose.report('vf file comment: ' + x, 'debug')
+            _log.debug('vf file comment: %s', x)
         self.state = _dvistate.outer
         # cs = checksum, ds = design size
 
 
 def _fix2comp(num):
-    """
-    Convert from two's complement to negative.
-    """
+    """Convert from two's complement to negative."""
     assert 0 <= num < 2**32
     if num & 2**31:
         return num - 2**32
@@ -695,54 +727,45 @@ def _fix2comp(num):
 
 
 def _mul2012(num1, num2):
-    """
-    Multiply two numbers in 20.12 fixed point format.
-    """
+    """Multiply two numbers in 20.12 fixed point format."""
     # Separated into a function because >> has surprising precedence
     return (num1*num2) >> 20
 
 
-class Tfm(object):
+class Tfm:
     """
-    A TeX Font Metric file. This implementation covers only the bare
-    minimum needed by the Dvi class.
+    A TeX Font Metric file.
 
-    .. attribute:: checksum
+    This implementation covers only the bare minimum needed by the Dvi class.
 
+    Parameters
+    ----------
+    filename : str or path-like
+
+    Attributes
+    ----------
+    checksum : int
        Used for verifying against the dvi file.
-
-    .. attribute:: design_size
-
-       Design size of the font (in what units?)
-
-    .. attribute::  width
-
-       Width of each character, needs to be scaled by the factor
-       specified in the dvi file. This is a dict because indexing may
+    design_size : int
+       Design size of the font (unknown units)
+    width, height, depth : dict
+       Dimensions of each character, need to be scaled by the factor
+       specified in the dvi file. These are dicts because indexing may
        not start from 0.
-
-    .. attribute:: height
-
-       Height of each character.
-
-    .. attribute:: depth
-
-       Depth of each character.
     """
     __slots__ = ('checksum', 'design_size', 'width', 'height', 'depth')
 
     def __init__(self, filename):
-        matplotlib.verbose.report('opening tfm file ' + filename, 'debug')
+        _log.debug('opening tfm file %s', filename)
         with open(filename, 'rb') as file:
             header1 = file.read(24)
             lh, bc, ec, nw, nh, nd = \
-                struct.unpack(str('!6H'), header1[2:14])
-            matplotlib.verbose.report(
-                'lh=%d, bc=%d, ec=%d, nw=%d, nh=%d, nd=%d' % (
-                    lh, bc, ec, nw, nh, nd), 'debug')
+                struct.unpack('!6H', header1[2:14])
+            _log.debug('lh=%d, bc=%d, ec=%d, nw=%d, nh=%d, nd=%d',
+                       lh, bc, ec, nw, nh, nd)
             header2 = file.read(4*lh)
             self.checksum, self.design_size = \
-                struct.unpack(str('!2I'), header2[:8])
+                struct.unpack('!2I', header2[:8])
             # there is also encoding information etc.
             char_info = file.read(4*(ec-bc+1))
             widths = file.read(4*nw)
@@ -751,36 +774,29 @@ class Tfm(object):
 
         self.width, self.height, self.depth = {}, {}, {}
         widths, heights, depths = \
-            [struct.unpack(str('!%dI') % (len(x)/4), x)
+            [struct.unpack('!%dI' % (len(x)/4), x)
              for x in (widths, heights, depths)]
-        for idx, char in enumerate(xrange(bc, ec+1)):
-            byte0 = ord(char_info[4*idx])
-            byte1 = ord(char_info[4*idx+1])
+        for idx, char in enumerate(range(bc, ec+1)):
+            byte0 = char_info[4*idx]
+            byte1 = char_info[4*idx+1]
             self.width[char] = _fix2comp(widths[byte0])
             self.height[char] = _fix2comp(heights[byte1 >> 4])
             self.depth[char] = _fix2comp(depths[byte1 & 0xf])
 
 
-PsFont = namedtuple('Font', 'texname psname effects encoding filename')
+PsFont = namedtuple('PsFont', 'texname psname effects encoding filename')
 
 
-class PsfontsMap(object):
+class PsfontsMap:
     """
     A psfonts.map formatted file, mapping TeX fonts to PS fonts.
-    Usage::
 
-     >>> map = PsfontsMap(find_tex_file('pdftex.map'))
-     >>> entry = map['ptmbo8r']
-     >>> entry.texname
-     'ptmbo8r'
-     >>> entry.psname
-     'Times-Bold'
-     >>> entry.encoding
-     '/usr/local/texlive/2008/texmf-dist/fonts/enc/dvips/base/8r.enc'
-     >>> entry.effects
-     {'slant': 0.16700000000000001}
-     >>> entry.filename
+    Parameters
+    ----------
+    filename : str or path-like
 
+    Notes
+    -----
     For historical reasons, TeX knows many Type-1 fonts by different
     names than the outside world. (For one thing, the names have to
     fit in eight characters.) Also, TeX's native fonts are not Type-1
@@ -792,57 +808,70 @@ class PsfontsMap(object):
     file names.
 
     A texmf tree typically includes mapping files called e.g.
-    psfonts.map, pdftex.map, dvipdfm.map. psfonts.map is used by
-    dvips, pdftex.map by pdfTeX, and dvipdfm.map by dvipdfm.
-    psfonts.map might avoid embedding the 35 PostScript fonts (i.e.,
-    have no filename for them, as in the Times-Bold example above),
-    while the pdf-related files perhaps only avoid the "Base 14" pdf
-    fonts. But the user may have configured these files differently.
-    """
-    __slots__ = ('_font',)
+    :file:`psfonts.map`, :file:`pdftex.map`, or :file:`dvipdfm.map`.
+    The file :file:`psfonts.map` is used by :program:`dvips`,
+    :file:`pdftex.map` by :program:`pdfTeX`, and :file:`dvipdfm.map`
+    by :program:`dvipdfm`. :file:`psfonts.map` might avoid embedding
+    the 35 PostScript fonts (i.e., have no filename for them, as in
+    the Times-Bold example above), while the pdf-related files perhaps
+    only avoid the "Base 14" pdf fonts. But the user may have
+    configured these files differently.
 
-    def __init__(self, filename):
+    Examples
+    --------
+    >>> map = PsfontsMap(find_tex_file('pdftex.map'))
+    >>> entry = map[b'ptmbo8r']
+    >>> entry.texname
+    b'ptmbo8r'
+    >>> entry.psname
+    b'Times-Bold'
+    >>> entry.encoding
+    '/usr/local/texlive/2008/texmf-dist/fonts/enc/dvips/base/8r.enc'
+    >>> entry.effects
+    {'slant': 0.16700000000000001}
+    >>> entry.filename
+    """
+    __slots__ = ('_font', '_filename')
+
+    # Create a filename -> PsfontsMap cache, so that calling
+    # `PsfontsMap(filename)` with the same filename a second time immediately
+    # returns the same object.
+    @lru_cache()
+    def __new__(cls, filename):
+        self = object.__new__(cls)
         self._font = {}
-        with open(filename, 'rt') as file:
+        self._filename = os.fsdecode(filename)
+        with open(filename, 'rb') as file:
             self._parse(file)
+        return self
 
     def __getitem__(self, texname):
+        assert isinstance(texname, bytes)
         try:
             result = self._font[texname]
         except KeyError:
-            result = self._font[texname.decode('ascii')]
+            fmt = ('A PostScript file for the font whose TeX name is "{0}" '
+                   'could not be found in the file "{1}". The dviread module '
+                   'can only handle fonts that have an associated PostScript '
+                   'font file. '
+                   'This problem can often be solved by installing '
+                   'a suitable PostScript font package in your (TeX) '
+                   'package manager.')
+            msg = fmt.format(texname.decode('ascii'), self._filename)
+            msg = textwrap.fill(msg, break_on_hyphens=False,
+                                break_long_words=False)
+            _log.info(msg)
+            raise
         fn, enc = result.filename, result.encoding
-        if fn is not None and not fn.startswith('/'):
+        if fn is not None and not fn.startswith(b'/'):
             fn = find_tex_file(fn)
-        if enc is not None and not enc.startswith('/'):
+        if enc is not None and not enc.startswith(b'/'):
             enc = find_tex_file(result.encoding)
         return result._replace(filename=fn, encoding=enc)
 
     def _parse(self, file):
-        """Parse each line into words."""
-        for line in file:
-            line = line.strip()
-            if line == '' or line.startswith('%'):
-                continue
-            words, pos = [], 0
-            while pos < len(line):
-                if line[pos] == '"':   # double quoted word
-                    pos += 1
-                    end = line.index('"', pos)
-                    words.append(line[pos:end])
-                    pos = end + 1
-                else:                  # ordinary word
-                    end = line.find(' ', pos+1)
-                    if end == -1:
-                        end = len(line)
-                    words.append(line[pos:end])
-                    pos = end
-                while pos < len(line) and line[pos] == ' ':
-                    pos += 1
-            self._register(words)
-
-    def _register(self, words):
-        """Register a font described by "words".
+        """
+        Parse the font mapping file.
 
         The format is, AFAIK: texname fontname [effects and filenames]
         Effects are PostScript snippets like ".177 SlantFont",
@@ -854,189 +883,238 @@ class PsfontsMap(object):
         There is some difference between <foo.pfb and <<bar.pfb in
         subsetting, but I have no example of << in my TeX installation.
         """
-
         # If the map file specifies multiple encodings for a font, we
         # follow pdfTeX in choosing the last one specified. Such
         # entries are probably mistakes but they have occurred.
         # http://tex.stackexchange.com/questions/10826/
         # http://article.gmane.org/gmane.comp.tex.pdftex/4914
 
-        texname, psname = words[:2]
-        effects, encoding, filename = '', None, None
-        for word in words[2:]:
-            if not word.startswith('<'):
-                effects = word
-            else:
-                word = word.lstrip('<')
-                if word.startswith('[') or word.endswith('.enc'):
+        empty_re = re.compile(br'%|\s*$')
+        word_re = re.compile(
+            br'''(?x) (?:
+                 "<\[ (?P<enc1>  [^"]+    )" | # quoted encoding marked by [
+                 "<   (?P<enc2>  [^"]+.enc)" | # quoted encoding, ends in .enc
+                 "<<? (?P<file1> [^"]+    )" | # quoted font file name
+                 "    (?P<eff1>  [^"]+    )" | # quoted effects or font name
+                 <\[  (?P<enc3>  \S+      )  | # encoding marked by [
+                 <    (?P<enc4>  \S+  .enc)  | # encoding, ends in .enc
+                 <<?  (?P<file2> \S+      )  | # font file name
+                      (?P<eff2>  \S+      )    # effects or font name
+            )''')
+        effects_re = re.compile(
+            br'''(?x) (?P<slant> -?[0-9]*(?:\.[0-9]+)) \s* SlantFont
+                    | (?P<extend>-?[0-9]*(?:\.[0-9]+)) \s* ExtendFont''')
+
+        lines = (line.strip()
+                 for line in file
+                 if not empty_re.match(line))
+        for line in lines:
+            effects, encoding, filename = b'', None, None
+            words = word_re.finditer(line)
+
+            # The named groups are mutually exclusive and are
+            # referenced below at an estimated order of probability of
+            # occurrence based on looking at my copy of pdftex.map.
+            # The font names are probably unquoted:
+            w = next(words)
+            texname = w.group('eff2') or w.group('eff1')
+            w = next(words)
+            psname = w.group('eff2') or w.group('eff1')
+
+            for w in words:
+                # Any effects are almost always quoted:
+                eff = w.group('eff1') or w.group('eff2')
+                if eff:
+                    effects = eff
+                    continue
+                # Encoding files usually have the .enc suffix
+                # and almost never need quoting:
+                enc = (w.group('enc4') or w.group('enc3') or
+                       w.group('enc2') or w.group('enc1'))
+                if enc:
                     if encoding is not None:
-                        matplotlib.verbose.report(
-                            'Multiple encodings for %s = %s'
-                            % (texname, psname), 'debug')
-                    if word.startswith('['):
-                        encoding = word[1:]
-                    else:
-                        encoding = word
+                        _log.debug('Multiple encodings for %s = %s',
+                                   texname, psname)
+                    encoding = enc
+                    continue
+                # File names are probably unquoted:
+                filename = w.group('file2') or w.group('file1')
+
+            effects_dict = {}
+            for match in effects_re.finditer(effects):
+                slant = match.group('slant')
+                if slant:
+                    effects_dict['slant'] = float(slant)
                 else:
-                    assert filename is None
-                    filename = word
+                    effects_dict['extend'] = float(match.group('extend'))
 
-        eff = effects.split()
-        effects = {}
-        try:
-            effects['slant'] = float(eff[eff.index('SlantFont')-1])
-        except ValueError:
-            pass
-        try:
-            effects['extend'] = float(eff[eff.index('ExtendFont')-1])
-        except ValueError:
-            pass
-
-        self._font[texname] = PsFont(
-            texname=texname, psname=psname, effects=effects,
-            encoding=encoding, filename=filename)
+            self._font[texname] = PsFont(
+                texname=texname, psname=psname, effects=effects_dict,
+                encoding=encoding, filename=filename)
 
 
-class Encoding(object):
-    """
-    Parses a \*.enc file referenced from a psfonts.map style file.
-    The format this class understands is a very limited subset of
-    PostScript.
+@cbook.deprecated("3.3")
+class Encoding:
+    r"""
+    Parse a \*.enc file referenced from a psfonts.map style file.
+
+    The format this class understands is a very limited subset of PostScript.
 
     Usage (subject to change)::
 
       for name in Encoding(filename):
           whatever(name)
+
+    Parameters
+    ----------
+    filename : str or path-like
+
+    Attributes
+    ----------
+    encoding : list
+        List of character names
     """
     __slots__ = ('encoding',)
 
     def __init__(self, filename):
-        with open(filename, 'rt') as file:
-            matplotlib.verbose.report('Parsing TeX encoding ' + filename,
-                                      'debug-annoying')
+        with open(filename, 'rb') as file:
+            _log.debug('Parsing TeX encoding %s', filename)
             self.encoding = self._parse(file)
-            matplotlib.verbose.report('Result: ' + repr(self.encoding),
-                                      'debug-annoying')
+            _log.debug('Result: %s', self.encoding)
 
     def __iter__(self):
-        for name in self.encoding:
-            yield name
+        yield from self.encoding
 
-    def _parse(self, file):
-        result = []
-
-        state = 0
-        for line in file:
-            comment_start = line.find('%')
-            if comment_start > -1:
-                line = line[:comment_start]
-            line = line.strip()
-
-            if state == 0:
-                # Expecting something like /FooEncoding [
-                if '[' in line:
-                    state = 1
-                    line = line[line.index('[')+1:].strip()
-
-            if state == 1:
-                if ']' in line:  # ] def
-                    line = line[:line.index(']')]
-                    state = 2
-                words = line.split()
-                for w in words:
-                    if w.startswith('/'):
-                        # Allow for /abc/def/ghi
-                        subwords = w.split('/')
-                        result.extend(subwords[1:])
-                    else:
-                        raise ValueError("Broken name in encoding file: " + w)
-
-        return result
+    @staticmethod
+    def _parse(file):
+        lines = (line.split(b'%', 1)[0].strip() for line in file)
+        data = b''.join(lines)
+        beginning = data.find(b'[')
+        if beginning < 0:
+            raise ValueError("Cannot locate beginning of encoding in {}"
+                             .format(file))
+        data = data[beginning:]
+        end = data.find(b']')
+        if end < 0:
+            raise ValueError("Cannot locate end of encoding in {}"
+                             .format(file))
+        data = data[:end]
+        return re.findall(br'/([^][{}<>\s]+)', data)
 
 
+# Note: this function should ultimately replace the Encoding class, which
+# appears to be mostly broken: because it uses b''.join(), there is no
+# whitespace left between glyph names (only slashes) so the final re.findall
+# returns a single string with all glyph names.  However this does not appear
+# to bother backend_pdf, so that needs to be investigated more.  (The fixed
+# version below is necessary for textpath/backend_svg, though.)
+def _parse_enc(path):
+    r"""
+    Parses a \*.enc file referenced from a psfonts.map style file.
+    The format this class understands is a very limited subset of PostScript.
+
+    Parameters
+    ----------
+    path : os.PathLike
+
+    Returns
+    -------
+    list
+        The nth entry of the list is the PostScript glyph name of the nth
+        glyph.
+    """
+    no_comments = re.sub("%.*", "", Path(path).read_text(encoding="ascii"))
+    array = re.search(r"(?s)\[(.*)\]", no_comments).group(1)
+    lines = [line for line in array.split() if line]
+    if all(line.startswith("/") for line in lines):
+        return [line[1:] for line in lines]
+    else:
+        raise ValueError(
+            "Failed to parse {} as Postscript encoding".format(path))
+
+
+@lru_cache()
 def find_tex_file(filename, format=None):
     """
-    Call :program:`kpsewhich` to find a file in the texmf tree. If
-    *format* is not None, it is used as the value for the
-    `--format` option.
+    Find a file in the texmf tree.
 
-    Apparently most existing TeX distributions on Unix-like systems
-    use kpathsea. It's also available as part of MikTeX, a popular
+    Calls :program:`kpsewhich` which is an interface to the kpathsea
+    library [1]_. Most existing TeX distributions on Unix-like systems use
+    kpathsea. It is also available as part of MikTeX, a popular
     distribution on Windows.
 
-    .. seealso::
+    *If the file is not found, an empty string is returned*.
 
-      `Kpathsea documentation <http://www.tug.org/kpathsea/>`_
+    Parameters
+    ----------
+    filename : str or path-like
+    format : str or bytes
+        Used as the value of the ``--format`` option to :program:`kpsewhich`.
+        Could be e.g. 'tfm' or 'vf' to limit the search to that type of files.
+
+    References
+    ----------
+    .. [1] `Kpathsea documentation <http://www.tug.org/kpathsea/>`_
         The library that :program:`kpsewhich` is part of.
     """
+
+    # we expect these to always be ascii encoded, but use utf-8
+    # out of caution
+    if isinstance(filename, bytes):
+        filename = filename.decode('utf-8', errors='replace')
+    if isinstance(format, bytes):
+        format = format.decode('utf-8', errors='replace')
+
+    if os.name == 'nt':
+        # On Windows only, kpathsea can use utf-8 for cmd args and output.
+        # The `command_line_encoding` environment variable is set to force it
+        # to always use utf-8 encoding.  See Matplotlib issue #11848.
+        kwargs = {'env': {**os.environ, 'command_line_encoding': 'utf-8'},
+                  'encoding': 'utf-8'}
+    else:  # On POSIX, run through the equivalent of os.fsdecode().
+        kwargs = {'encoding': sys.getfilesystemencoding(),
+                  'errors': 'surrogatescape'}
 
     cmd = ['kpsewhich']
     if format is not None:
         cmd += ['--format=' + format]
     cmd += [filename]
-
-    matplotlib.verbose.report('find_tex_file(%s): %s'
-                              % (filename, cmd), 'debug')
-    # stderr is unused, but reading it avoids a subprocess optimization
-    # that breaks EINTR handling in some Python versions:
-    # http://bugs.python.org/issue12493
-    # https://github.com/matplotlib/matplotlib/issues/633
-    pipe = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE)
-    result = pipe.communicate()[0].rstrip()
-    matplotlib.verbose.report('find_tex_file result: %s' % result,
-                              'debug')
-    return result.decode('ascii')
-
-# With multiple text objects per figure (e.g., tick labels) we may end
-# up reading the same tfm and vf files many times, so we implement a
-# simple cache. TODO: is this worth making persistent?
-
-_tfmcache = {}
-_vfcache = {}
-
-
-def _fontfile(texname, class_, suffix, cache):
     try:
-        return cache[texname]
-    except KeyError:
-        pass
+        result = cbook._check_and_log_subprocess(cmd, _log, **kwargs)
+    except RuntimeError:
+        return ''
+    return result.rstrip('\n')
 
+
+@lru_cache()
+def _fontfile(cls, suffix, texname):
     filename = find_tex_file(texname + suffix)
-    if filename:
-        result = class_(filename)
-    else:
-        result = None
-
-    cache[texname] = result
-    return result
+    return cls(filename) if filename else None
 
 
-def _tfmfile(texname):
-    return _fontfile(texname, Tfm, '.tfm', _tfmcache)
-
-
-def _vffile(texname):
-    return _fontfile(texname, Vf, '.vf', _vfcache)
+_tfmfile = partial(_fontfile, Tfm, ".tfm")
+_vffile = partial(_fontfile, Vf, ".vf")
 
 
 if __name__ == '__main__':
-    import sys
-    matplotlib.verbose.set_level('debug-annoying')
-    fname = sys.argv[1]
-    try:
-        dpi = float(sys.argv[2])
-    except IndexError:
-        dpi = None
-    with Dvi(fname, dpi) as dvi:
+    from argparse import ArgumentParser
+    import itertools
+
+    parser = ArgumentParser()
+    parser.add_argument("filename")
+    parser.add_argument("dpi", nargs="?", type=float, default=None)
+    args = parser.parse_args()
+    with Dvi(args.filename, args.dpi) as dvi:
         fontmap = PsfontsMap(find_tex_file('pdftex.map'))
         for page in dvi:
             print('=== new page ===')
-            fPrev = None
-            for x, y, f, c, w in page.text:
-                if f != fPrev:
-                    print('font', f.texname, 'scaled', f._scale/pow(2.0, 20))
-                    fPrev = f
-                print(x, y, c, 32 <= c < 128 and chr(c) or '.', w)
+            for font, group in itertools.groupby(
+                    page.text, lambda text: text.font):
+                print('font', font.texname, 'scaled', font._scale / 2 ** 20)
+                for text in group:
+                    print(text.x, text.y, text.glyph,
+                          chr(text.glyph) if chr(text.glyph).isprintable()
+                          else ".",
+                          text.width)
             for x, y, w, h in page.boxes:
                 print(x, y, 'BOX', w, h)

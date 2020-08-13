@@ -1,5 +1,5 @@
 #define NO_IMPORT_ARRAY
-
+#define PY_SSIZE_T_CLEAN
 #include "py_converters.h"
 #include "numpy_cpp.h"
 
@@ -27,7 +27,7 @@ static int convert_string_enum(PyObject *obj, const char *name, const char **nam
         Py_INCREF(obj);
         bytesobj = obj;
     } else {
-        PyErr_Format(PyExc_TypeError, "%s must be bytes or unicode", name);
+        PyErr_Format(PyExc_TypeError, "%s must be str or bytes", name);
         return 0;
     }
 
@@ -54,9 +54,9 @@ int convert_from_method(PyObject *obj, const char *name, converter func, void *p
 {
     PyObject *value;
 
-    value = PyObject_CallMethod(obj, (char *)name, NULL);
+    value = PyObject_CallMethod(obj, name, NULL);
     if (value == NULL) {
-        if (!PyObject_HasAttrString(obj, (char *)name)) {
+        if (!PyObject_HasAttrString(obj, name)) {
             PyErr_Clear();
             return 1;
         }
@@ -76,9 +76,9 @@ int convert_from_attr(PyObject *obj, const char *name, converter func, void *p)
 {
     PyObject *value;
 
-    value = PyObject_GetAttrString(obj, (char *)name);
+    value = PyObject_GetAttrString(obj, name);
     if (value == NULL) {
-        if (!PyObject_HasAttrString(obj, (char *)name)) {
+        if (!PyObject_HasAttrString(obj, name)) {
             PyErr_Clear();
             return 1;
         }
@@ -92,6 +92,13 @@ int convert_from_attr(PyObject *obj, const char *name, converter func, void *p)
 
     Py_DECREF(value);
     return 1;
+}
+
+int convert_voidptr(PyObject *obj, void *p)
+{
+    void **val = (void **)p;
+    *val = PyLong_AsVoidPtr(obj);
+    return *val != NULL ? 1 : !PyErr_Occurred();
 }
 
 int convert_double(PyObject *obj, void *p)
@@ -109,9 +116,11 @@ int convert_double(PyObject *obj, void *p)
 int convert_bool(PyObject *obj, void *p)
 {
     bool *val = (bool *)p;
-
-    *val = PyObject_IsTrue(obj);
-
+    switch (PyObject_IsTrue(obj)) {
+        case 0: *val = false; break;
+        case 1: *val = true; break;
+        default: return 0;  // errored.
+    }
     return 1;
 }
 
@@ -153,45 +162,36 @@ int convert_rect(PyObject *rectobj, void *rectp)
         rect->x2 = 0.0;
         rect->y2 = 0.0;
     } else {
-        try
-        {
-            numpy::array_view<const double, 2> rect_arr(rectobj);
+        PyArrayObject *rect_arr = (PyArrayObject *)PyArray_ContiguousFromAny(
+                rectobj, NPY_DOUBLE, 1, 2);
+        if (rect_arr == NULL) {
+            return 0;
+        }
 
-            if (rect_arr.dim(0) != 2 || rect_arr.dim(1) != 2) {
+        if (PyArray_NDIM(rect_arr) == 2) {
+            if (PyArray_DIM(rect_arr, 0) != 2 ||
+                PyArray_DIM(rect_arr, 1) != 2) {
                 PyErr_SetString(PyExc_ValueError, "Invalid bounding box");
+                Py_DECREF(rect_arr);
                 return 0;
             }
 
-            rect->x1 = rect_arr(0, 0);
-            rect->y1 = rect_arr(0, 1);
-            rect->x2 = rect_arr(1, 0);
-            rect->y2 = rect_arr(1, 1);
-        }
-        catch (py::exception)
-        {
-            PyErr_Clear();
-
-            try
-            {
-                numpy::array_view<const double, 1> rect_arr(rectobj);
-
-                if (rect_arr.dim(0) != 4) {
-                    PyErr_SetString(PyExc_ValueError, "Invalid bounding box");
-                    return 0;
-                }
-
-                rect->x1 = rect_arr(0);
-                rect->y1 = rect_arr(1);
-                rect->x2 = rect_arr(2);
-                rect->y2 = rect_arr(3);
-            }
-            catch (py::exception)
-            {
+        } else {  // PyArray_NDIM(rect_arr) == 1
+            if (PyArray_DIM(rect_arr, 0) != 4) {
+                PyErr_SetString(PyExc_ValueError, "Invalid bounding box");
+                Py_DECREF(rect_arr);
                 return 0;
             }
         }
+
+        double *buff = (double *)PyArray_DATA(rect_arr);
+        rect->x1 = buff[0];
+        rect->y1 = buff[1];
+        rect->x2 = buff[2];
+        rect->y2 = buff[3];
+
+        Py_DECREF(rect_arr);
     }
-
     return 1;
 }
 
@@ -226,7 +226,6 @@ int convert_dashes(PyObject *dashobj, void *dashesp)
     PyObject *dash_offset_obj = NULL;
     double dash_offset = 0.0;
     PyObject *dashes_seq = NULL;
-    Py_ssize_t nentries;
 
     if (!PyArg_ParseTuple(dashobj, "OO:dashes", &dash_offset_obj, &dashes_seq)) {
         return 0;
@@ -235,6 +234,14 @@ int convert_dashes(PyObject *dashobj, void *dashesp)
     if (dash_offset_obj != Py_None) {
         dash_offset = PyFloat_AsDouble(dash_offset_obj);
         if (PyErr_Occurred()) {
+            return 0;
+        }
+    } else {
+        if (PyErr_WarnEx(PyExc_FutureWarning,
+                         "Passing the dash offset as None is deprecated since "
+                         "Matplotlib 3.3 and will be removed in Matplotlib 3.5; "
+                         "pass it as zero instead.",
+                         1)) {
             return 0;
         }
     }
@@ -248,18 +255,17 @@ int convert_dashes(PyObject *dashobj, void *dashesp)
         return 0;
     }
 
-    nentries = PySequence_Size(dashes_seq);
-    if (nentries % 2 != 0) {
-        PyErr_Format(PyExc_ValueError, "dashes sequence must have an even number of elements");
-        return 0;
-    }
+    Py_ssize_t nentries = PySequence_Size(dashes_seq);
+    // If the dashpattern has odd length, iterate through it twice (in
+    // accordance with the pdf/ps/svg specs).
+    Py_ssize_t dash_pattern_length = (nentries % 2) ? 2 * nentries : nentries;
 
-    for (Py_ssize_t i = 0; i < nentries; ++i) {
+    for (Py_ssize_t i = 0; i < dash_pattern_length; ++i) {
         PyObject *item;
         double length;
         double skip;
 
-        item = PySequence_GetItem(dashes_seq, i);
+        item = PySequence_GetItem(dashes_seq, i % nentries);
         if (item == NULL) {
             return 0;
         }
@@ -272,7 +278,7 @@ int convert_dashes(PyObject *dashobj, void *dashesp)
 
         ++i;
 
-        item = PySequence_GetItem(dashes_seq, i);
+        item = PySequence_GetItem(dashes_seq, i % nentries);
         if (item == NULL) {
             return 0;
         }
@@ -331,27 +337,26 @@ int convert_trans_affine(PyObject *obj, void *transp)
         return 1;
     }
 
-    try
-    {
-        numpy::array_view<const double, 2> matrix(obj);
-
-        if (matrix.dim(0) == 3 && matrix.dim(1) == 3) {
-            trans->sx = matrix(0, 0);
-            trans->shx = matrix(0, 1);
-            trans->tx = matrix(0, 2);
-
-            trans->shy = matrix(1, 0);
-            trans->sy = matrix(1, 1);
-            trans->ty = matrix(1, 2);
-
-            return 1;
-        }
-    }
-    catch (py::exception)
-    {
+    PyArrayObject *array = (PyArrayObject *)PyArray_ContiguousFromAny(obj, NPY_DOUBLE, 2, 2);
+    if (array == NULL) {
         return 0;
     }
 
+    if (PyArray_DIM(array, 0) == 3 && PyArray_DIM(array, 1) == 3) {
+        double *buffer = (double *)PyArray_DATA(array);
+        trans->sx = buffer[0];
+        trans->shx = buffer[1];
+        trans->tx = buffer[2];
+
+        trans->shy = buffer[3];
+        trans->sy = buffer[4];
+        trans->ty = buffer[5];
+
+        Py_DECREF(array);
+        return 1;
+    }
+
+    Py_DECREF(array);
     PyErr_SetString(PyExc_ValueError, "Invalid affine transformation matrix");
     return 0;
 }
@@ -387,7 +392,11 @@ int convert_path(PyObject *obj, void *pathp)
     if (should_simplify_obj == NULL) {
         goto exit;
     }
-    should_simplify = PyObject_IsTrue(should_simplify_obj);
+    switch (PyObject_IsTrue(should_simplify_obj)) {
+        case 0: should_simplify = 0; break;
+        case 1: should_simplify = 1; break;
+        default: goto exit;  // errored.
+    }
 
     simplify_threshold_obj = PyObject_GetAttrString(obj, "simplify_threshold");
     if (simplify_threshold_obj == NULL) {
@@ -436,15 +445,15 @@ int convert_clippath(PyObject *clippath_tuple, void *clippathp)
 int convert_snap(PyObject *obj, void *snapp)
 {
     e_snap_mode *snap = (e_snap_mode *)snapp;
-
     if (obj == NULL || obj == Py_None) {
         *snap = SNAP_AUTO;
-    } else if (PyObject_IsTrue(obj)) {
-        *snap = SNAP_TRUE;
     } else {
-        *snap = SNAP_FALSE;
+        switch (PyObject_IsTrue(obj)) {
+            case 0: *snap = SNAP_FALSE; break;
+            case 1: *snap = SNAP_TRUE; break;
+            default: return 0;  // errored.
+        }
     }
-
     return 1;
 }
 
@@ -481,6 +490,7 @@ int convert_gcagg(PyObject *pygc, void *gcp)
           convert_from_method(pygc, "get_clip_path", &convert_clippath, &gc->clippath) &&
           convert_from_method(pygc, "get_snap", &convert_snap, &gc->snap_mode) &&
           convert_from_method(pygc, "get_hatch_path", &convert_path, &gc->hatchpath) &&
+          convert_from_method(pygc, "get_hatch_color", &convert_rgba, &gc->hatch_color) &&
           convert_from_method(pygc, "get_hatch_linewidth", &convert_double, &gc->hatch_linewidth) &&
           convert_from_method(pygc, "get_sketch_params", &convert_sketch_params, &gc->sketch))) {
         return 0;
@@ -536,7 +546,7 @@ int convert_points(PyObject *obj, void *pointsp)
 
     if (points->dim(1) != 2) {
         PyErr_Format(PyExc_ValueError,
-                     "Points must be Nx2 array, got %dx%d",
+                     "Points must be Nx2 array, got %" NPY_INTP_FMT "x%" NPY_INTP_FMT,
                      points->dim(0), points->dim(1));
         return 0;
     }
@@ -560,7 +570,7 @@ int convert_transforms(PyObject *obj, void *transp)
 
     if (trans->dim(1) != 3 || trans->dim(2) != 3) {
         PyErr_Format(PyExc_ValueError,
-                     "Transforms must be Nx3x3 array, got %dx%dx%d",
+                     "Transforms must be Nx3x3 array, got %" NPY_INTP_FMT "x%" NPY_INTP_FMT "x%" NPY_INTP_FMT,
                      trans->dim(0), trans->dim(1), trans->dim(2));
         return 0;
     }
@@ -584,7 +594,7 @@ int convert_bboxes(PyObject *obj, void *bboxp)
 
     if (bbox->dim(1) != 2 || bbox->dim(2) != 2) {
         PyErr_Format(PyExc_ValueError,
-                     "Bbox array must be Nx2x2 array, got %dx%dx%d",
+                     "Bbox array must be Nx2x2 array, got %" NPY_INTP_FMT "x%" NPY_INTP_FMT "x%" NPY_INTP_FMT,
                      bbox->dim(0), bbox->dim(1), bbox->dim(2));
         return 0;
     }
@@ -608,7 +618,7 @@ int convert_colors(PyObject *obj, void *colorsp)
 
     if (colors->dim(1) != 4) {
         PyErr_Format(PyExc_ValueError,
-                     "Colors array must be Nx4 array, got %dx%d",
+                     "Colors array must be Nx4 array, got %" NPY_INTP_FMT "x%" NPY_INTP_FMT,
                      colors->dim(0), colors->dim(1));
         return 0;
     }

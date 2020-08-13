@@ -1,14 +1,14 @@
 """
+===============
+SVG Filter Line
+===============
+
 Demonstrate SVG filtering effects which might be used with mpl.
 
-Note that the filtering effects are only effective if your svg rederer
+Note that the filtering effects are only effective if your svg renderer
 support it.
 """
 
-from __future__ import print_function
-import matplotlib
-
-matplotlib.use("Svg")
 
 import matplotlib.pyplot as plt
 import matplotlib.transforms as mtransforms
@@ -57,11 +57,12 @@ f = BytesIO()
 plt.savefig(f, format="svg")
 
 
-import xml.etree.cElementTree as ET
+import xml.etree.ElementTree as ET
 
 # filter definition for a gaussian blur
 filter_def = """
-  <defs  xmlns='http://www.w3.org/2000/svg' xmlns:xlink='http://www.w3.org/1999/xlink'>
+  <defs xmlns='http://www.w3.org/2000/svg'
+        xmlns:xlink='http://www.w3.org/1999/xlink'>
     <filter id='dropshadow' height='1.2' width='1.2'>
       <feGaussianBlur result='blur' stdDeviation='3'/>
     </filter>
@@ -78,7 +79,7 @@ tree.insert(0, ET.XML(filter_def))
 for l in [l1, l2]:
     # pick up the svg element with given id
     shadow = xmlid[l.get_label() + "_shadow"]
-    # apply shdow filter
+    # apply shadow filter
     shadow.set("filter", 'url(#dropshadow)')
 
 fn = "svg_filter_line.svg"

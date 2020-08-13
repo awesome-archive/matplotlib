@@ -1,255 +1,297 @@
-# -*- coding: utf-8 -*-
 """Catch all for categorical functions"""
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-import unittest
-
+import pytest
 import numpy as np
 
+from matplotlib.axes import Axes
 import matplotlib.pyplot as plt
-from matplotlib.testing.decorators import cleanup
 import matplotlib.category as cat
+from matplotlib.testing.decorators import check_figures_equal
 
 
-class TestConvertToString(unittest.TestCase):
-    def setUp(self):
-        pass
+class TestUnitData:
+    test_cases = [('single', (["hello world"], [0])),
+                  ('unicode', (["Здравствуйте мир"], [0])),
+                  ('mixed', (['A', "np.nan", 'B', "3.14", "мир"],
+                             [0, 1, 2, 3, 4]))]
+    ids, data = zip(*test_cases)
 
-    def test_string(self):
-        self.assertEqual("abc", cat.convert_to_string("abc"))
+    @pytest.mark.parametrize("data, locs", data, ids=ids)
+    def test_unit(self, data, locs):
+        unit = cat.UnitData(data)
+        assert list(unit._mapping.keys()) == data
+        assert list(unit._mapping.values()) == locs
 
-    def test_unicode(self):
-        self.assertEqual("Здравствуйте мир",
-                         cat.convert_to_string("Здравствуйте мир"))
+    def test_update(self):
+        data = ['a', 'd']
+        locs = [0, 1]
 
-    def test_decimal(self):
-        self.assertEqual("3.14", cat.convert_to_string(3.14))
+        data_update = ['b', 'd', 'e']
+        unique_data = ['a', 'd', 'b', 'e']
+        updated_locs = [0, 1, 2, 3]
 
-    def test_nan(self):
-        self.assertEqual("nan", cat.convert_to_string(np.nan))
+        unit = cat.UnitData(data)
+        assert list(unit._mapping.keys()) == data
+        assert list(unit._mapping.values()) == locs
 
-    def test_posinf(self):
-        self.assertEqual("inf", cat.convert_to_string(np.inf))
+        unit.update(data_update)
+        assert list(unit._mapping.keys()) == unique_data
+        assert list(unit._mapping.values()) == updated_locs
 
-    def test_neginf(self):
-        self.assertEqual("-inf", cat.convert_to_string(-np.inf))
+    failing_test_cases = [("number", 3.14), ("nan", np.nan),
+                          ("list", [3.14, 12]), ("mixed type", ["A", 2])]
 
+    fids, fdata = zip(*test_cases)
 
-class TestMapCategories(unittest.TestCase):
-    def test_map_unicode(self):
-        act = cat.map_categories("Здравствуйте мир")
-        exp = [("Здравствуйте мир", 0)]
-        self.assertListEqual(act, exp)
+    @pytest.mark.parametrize("fdata", fdata, ids=fids)
+    def test_non_string_fails(self, fdata):
+        with pytest.raises(TypeError):
+            cat.UnitData(fdata)
 
-    def test_map_data(self):
-        act = cat.map_categories("hello world")
-        exp = [("hello world", 0)]
-        self.assertListEqual(act, exp)
-
-    def test_map_data_basic(self):
-        data = ['a', 'b', 'b', 'a', 'a', 'c', 'c', 'c']
-        exp = [('a', 0), ('b', 1), ('c', 2)]
-        act = cat.map_categories(data)
-        self.assertListEqual(sorted(act), sorted(exp))
-
-    def test_map_data_mixed(self):
-        data = ['A', 'A', np.nan, 'B', -np.inf, 3.14, np.inf]
-        exp = [('nan', -1), ('3.14', 0),
-               ('A', 1), ('B', 2), ('-inf', -3), ('inf', -2)]
-
-        act = cat.map_categories(data)
-        self.assertListEqual(sorted(act), sorted(exp))
-
-    @unittest.SkipTest
-    def test_update_map(self):
-        data = ['b', 'd', 'e', np.inf]
-        old_map = [('a', 0), ('d', 1)]
-        exp = [('inf', -2), ('a', 0), ('d', 1),
-               ('b', 2), ('e', 3)]
-        act = cat.map_categories(data, old_map)
-        self.assertListEqual(sorted(act), sorted(exp))
+    @pytest.mark.parametrize("fdata", fdata, ids=fids)
+    def test_non_string_update_fails(self, fdata):
+        unitdata = cat.UnitData()
+        with pytest.raises(TypeError):
+            unitdata.update(fdata)
 
 
-class FakeAxis(object):
-    def __init__(self):
-        self.unit_data = []
+class FakeAxis:
+    def __init__(self, units):
+        self.units = units
 
 
-class TestStrCategoryConverter(unittest.TestCase):
-    """Based on the pandas conversion and factorization tests:
+class TestStrCategoryConverter:
+    """
+    Based on the pandas conversion and factorization tests:
 
     ref: /pandas/tseries/tests/test_converter.py
          /pandas/tests/test_algos.py:TestFactorize
     """
+    test_cases = [("unicode", ["Здравствуйте мир"]),
+                  ("ascii", ["hello world"]),
+                  ("single", ['a', 'b', 'c']),
+                  ("integer string", ["1", "2"]),
+                  ("single + values>10", ["A", "B", "C", "D", "E", "F", "G",
+                                          "H", "I", "J", "K", "L", "M", "N",
+                                          "O", "P", "Q", "R", "S", "T", "U",
+                                          "V", "W", "X", "Y", "Z"])]
 
-    def setUp(self):
+    ids, values = zip(*test_cases)
+
+    failing_test_cases = [("mixed", [3.14, 'A', np.inf]),
+                          ("string integer", ['42', 42])]
+
+    fids, fvalues = zip(*failing_test_cases)
+
+    @pytest.fixture(autouse=True)
+    def mock_axis(self, request):
         self.cc = cat.StrCategoryConverter()
-        self.axis = FakeAxis()
+        # self.unit should be probably be replaced with real mock unit
+        self.unit = cat.UnitData()
+        self.ax = FakeAxis(self.unit)
 
-    def test_convert_unicode(self):
-        self.axis.unit_data = [("Здравствуйте мир", 42)]
-        act = self.cc.convert("Здравствуйте мир", None, self.axis)
-        exp = 42
-        self.assertEqual(act, exp)
+    @pytest.mark.parametrize("vals", values, ids=ids)
+    def test_convert(self, vals):
+        np.testing.assert_allclose(self.cc.convert(vals, self.ax.units,
+                                                   self.ax),
+                                   range(len(vals)))
 
-    def test_convert_single(self):
-        self.axis.unit_data = [("hello world", 42)]
-        act = self.cc.convert("hello world", None, self.axis)
-        exp = 42
-        self.assertEqual(act, exp)
+    @pytest.mark.parametrize("value", ["hi", "мир"], ids=["ascii", "unicode"])
+    def test_convert_one_string(self, value):
+        assert self.cc.convert(value, self.unit, self.ax) == 0
 
-    def test_convert_basic(self):
-        data = ['a', 'b', 'b', 'a', 'a', 'c', 'c', 'c']
-        exp = [0, 1, 1, 0, 0, 2, 2, 2]
-        self.axis.unit_data = [('a', 0), ('b', 1), ('c', 2)]
-        act = self.cc.convert(data, None, self.axis)
-        np.testing.assert_array_equal(act, exp)
+    def test_convert_one_number(self):
+        actual = self.cc.convert(0.0, self.unit, self.ax)
+        np.testing.assert_allclose(actual, np.array([0.]))
 
-    def test_convert_mixed(self):
-        data = ['A', 'A', np.nan, 'B', -np.inf, 3.14, np.inf]
-        exp = [1, 1, -1, 2, 100, 0, 200]
-        self.axis.unit_data = [('nan', -1), ('3.14', 0),
-                               ('A', 1), ('B', 2),
-                               ('-inf', 100), ('inf', 200)]
-        act = self.cc.convert(data, None, self.axis)
-        np.testing.assert_array_equal(act, exp)
+    def test_convert_float_array(self):
+        data = np.array([1, 2, 3], dtype=float)
+        actual = self.cc.convert(data, self.unit, self.ax)
+        np.testing.assert_allclose(actual, np.array([1., 2., 3.]))
+
+    @pytest.mark.parametrize("fvals", fvalues, ids=fids)
+    def test_convert_fail(self, fvals):
+        with pytest.raises(TypeError):
+            self.cc.convert(fvals, self.unit, self.ax)
 
     def test_axisinfo(self):
-        self.axis.unit_data = [('a', 0)]
-        ax = self.cc.axisinfo(None, self.axis)
-        self.assertTrue(isinstance(ax.majloc, cat.StrCategoryLocator))
-        self.assertTrue(isinstance(ax.majfmt, cat.StrCategoryFormatter))
+        axis = self.cc.axisinfo(self.unit, self.ax)
+        assert isinstance(axis.majloc, cat.StrCategoryLocator)
+        assert isinstance(axis.majfmt, cat.StrCategoryFormatter)
 
     def test_default_units(self):
-        self.assertEqual(self.cc.default_units(["a"], self.axis), None)
+        assert isinstance(self.cc.default_units(["a"], self.ax), cat.UnitData)
 
 
-class TestStrCategoryLocator(unittest.TestCase):
-    def setUp(self):
-        self.locs = list(range(10))
+@pytest.fixture
+def ax():
+    return plt.figure().subplots()
 
+
+PLOT_LIST = [Axes.scatter, Axes.plot, Axes.bar]
+PLOT_IDS = ["scatter", "plot", "bar"]
+
+
+class TestStrCategoryLocator:
     def test_StrCategoryLocator(self):
-        ticks = cat.StrCategoryLocator(self.locs)
-        np.testing.assert_equal(ticks.tick_values(None, None),
-                                self.locs)
+        locs = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        unit = cat.UnitData([str(j) for j in locs])
+        ticks = cat.StrCategoryLocator(unit._mapping)
+        np.testing.assert_array_equal(ticks.tick_values(None, None), locs)
+
+    @pytest.mark.parametrize("plotter", PLOT_LIST, ids=PLOT_IDS)
+    def test_StrCategoryLocatorPlot(self, ax, plotter):
+        ax.plot(["a", "b", "c"])
+        np.testing.assert_array_equal(ax.yaxis.major.locator(), range(3))
 
 
-class TestStrCategoryFormatter(unittest.TestCase):
-    def setUp(self):
-        self.seq = ["hello", "world", "hi"]
+class TestStrCategoryFormatter:
+    test_cases = [("ascii", ["hello", "world", "hi"]),
+                  ("unicode", ["Здравствуйте", "привет"])]
 
-    def test_StrCategoryFormatter(self):
-        labels = cat.StrCategoryFormatter(self.seq)
-        self.assertEqual(labels('a', 1), "world")
+    ids, cases = zip(*test_cases)
+
+    @pytest.mark.parametrize("ydata", cases, ids=ids)
+    def test_StrCategoryFormatter(self, ax, ydata):
+        unit = cat.UnitData(ydata)
+        labels = cat.StrCategoryFormatter(unit._mapping)
+        for i, d in enumerate(ydata):
+            assert labels(i, i) == d
+            assert labels(i, None) == d
+
+    @pytest.mark.parametrize("ydata", cases, ids=ids)
+    @pytest.mark.parametrize("plotter", PLOT_LIST, ids=PLOT_IDS)
+    def test_StrCategoryFormatterPlot(self, ax, ydata, plotter):
+        plotter(ax, range(len(ydata)), ydata)
+        for i, d in enumerate(ydata):
+            assert ax.yaxis.major.formatter(i) == d
+        assert ax.yaxis.major.formatter(i+1) == ""
 
 
-def lt(tl):
-    return [l.get_text() for l in tl]
+def axis_test(axis, labels):
+    ticks = list(range(len(labels)))
+    np.testing.assert_array_equal(axis.get_majorticklocs(), ticks)
+    graph_labels = [axis.major.formatter(i, i) for i in ticks]
+    # _text also decodes bytes as utf-8.
+    assert graph_labels == [cat.StrCategoryFormatter._text(l) for l in labels]
+    assert list(axis.units._mapping.keys()) == [l for l in labels]
+    assert list(axis.units._mapping.values()) == ticks
 
 
-class TestPlot(unittest.TestCase):
+class TestPlotBytes:
+    bytes_cases = [('string list', ['a', 'b', 'c']),
+                   ('bytes list', [b'a', b'b', b'c']),
+                   ('bytes ndarray', np.array([b'a', b'b', b'c']))]
 
-    def setUp(self):
-        self.d = ['a', 'b', 'c', 'a']
-        self.dticks = [0, 1, 2]
-        self.dlabels = ['a', 'b', 'c']
-        self.dunit_data = [('a', 0), ('b', 1), ('c', 2)]
+    bytes_ids, bytes_data = zip(*bytes_cases)
 
-        self.dm = ['here', np.nan, 'here', 'there']
-        self.dmticks = [-1, 0, 1]
-        self.dmlabels = ['nan', 'here', 'there']
-        self.dmunit_data = [('nan', -1), ('here', 0), ('there', 1)]
+    @pytest.mark.parametrize("plotter", PLOT_LIST, ids=PLOT_IDS)
+    @pytest.mark.parametrize("bdata", bytes_data, ids=bytes_ids)
+    def test_plot_bytes(self, ax, plotter, bdata):
+        counts = np.array([4, 6, 5])
+        plotter(ax, bdata, counts)
+        axis_test(ax.xaxis, bdata)
 
-    @cleanup
-    def test_plot_unicode(self):
-        # needs image test -  works but
-        fig = plt.figure()
-        ax = fig.add_subplot(1, 1, 1)
+
+class TestPlotNumlike:
+    numlike_cases = [('string list', ['1', '11', '3']),
+                     ('string ndarray', np.array(['1', '11', '3'])),
+                     ('bytes list', [b'1', b'11', b'3']),
+                     ('bytes ndarray', np.array([b'1', b'11', b'3']))]
+    numlike_ids, numlike_data = zip(*numlike_cases)
+
+    @pytest.mark.parametrize("plotter", PLOT_LIST, ids=PLOT_IDS)
+    @pytest.mark.parametrize("ndata", numlike_data, ids=numlike_ids)
+    def test_plot_numlike(self, ax, plotter, ndata):
+        counts = np.array([4, 6, 5])
+        plotter(ax, ndata, counts)
+        axis_test(ax.xaxis, ndata)
+
+
+class TestPlotTypes:
+    @pytest.mark.parametrize("plotter", PLOT_LIST, ids=PLOT_IDS)
+    def test_plot_unicode(self, ax, plotter):
         words = ['Здравствуйте', 'привет']
-        locs = [0.0, 1.0]
-        ax.plot(words)
-        fig.canvas.draw()
+        plotter(ax, words, [0, 1])
+        axis_test(ax.xaxis, words)
 
-        self.assertListEqual(ax.yaxis.unit_data,
-                             list(zip(words, locs)))
-        np.testing.assert_array_equal(ax.get_yticks(), locs)
-        self.assertListEqual(lt(ax.get_yticklabels()), words)
+    @pytest.fixture
+    def test_data(self):
+        self.x = ["hello", "happy", "world"]
+        self.xy = [2, 6, 3]
+        self.y = ["Python", "is", "fun"]
+        self.yx = [3, 4, 5]
 
-    @cleanup
-    def test_plot_1d(self):
-        fig = plt.figure()
-        ax = fig.add_subplot(1, 1, 1)
-        ax.plot(self.d)
-        fig.canvas.draw()
+    @pytest.mark.usefixtures("test_data")
+    @pytest.mark.parametrize("plotter", PLOT_LIST, ids=PLOT_IDS)
+    def test_plot_xaxis(self, ax, test_data, plotter):
+        plotter(ax, self.x, self.xy)
+        axis_test(ax.xaxis, self.x)
 
-        np.testing.assert_array_equal(ax.get_yticks(), self.dticks)
-        self.assertListEqual(lt(ax.get_yticklabels()),
-                             self.dlabels)
-        self.assertListEqual(ax.yaxis.unit_data, self.dunit_data)
+    @pytest.mark.usefixtures("test_data")
+    @pytest.mark.parametrize("plotter", PLOT_LIST, ids=PLOT_IDS)
+    def test_plot_yaxis(self, ax, test_data, plotter):
+        plotter(ax, self.yx, self.y)
+        axis_test(ax.yaxis, self.y)
 
-    @cleanup
-    def test_plot_1d_missing(self):
+    @pytest.mark.usefixtures("test_data")
+    @pytest.mark.parametrize("plotter", PLOT_LIST, ids=PLOT_IDS)
+    def test_plot_xyaxis(self, ax, test_data, plotter):
+        plotter(ax, self.x, self.y)
+        axis_test(ax.xaxis, self.x)
+        axis_test(ax.yaxis, self.y)
 
-        fig = plt.figure()
-        ax = fig.add_subplot(1, 1, 1)
-        ax.plot(self.dm)
-        fig.canvas.draw()
+    @pytest.mark.parametrize("plotter", PLOT_LIST, ids=PLOT_IDS)
+    def test_update_plot(self, ax, plotter):
+        plotter(ax, ['a', 'b'], ['e', 'g'])
+        plotter(ax, ['a', 'b', 'd'], ['f', 'a', 'b'])
+        plotter(ax, ['b', 'c', 'd'], ['g', 'e', 'd'])
+        axis_test(ax.xaxis, ['a', 'b', 'd', 'c'])
+        axis_test(ax.yaxis, ['e', 'g', 'f', 'a', 'b', 'd'])
 
-        np.testing.assert_array_equal(ax.get_yticks(), self.dmticks)
-        self.assertListEqual(lt(ax.get_yticklabels()),
-                             self.dmlabels)
-        self.assertListEqual(ax.yaxis.unit_data, self.dmunit_data)
+    failing_test_cases = [("mixed", ['A', 3.14]),
+                          ("number integer", ['1', 1]),
+                          ("string integer", ['42', 42]),
+                          ("missing", ['12', np.nan])]
 
-    @cleanup
-    def test_plot_2d(self):
+    fids, fvalues = zip(*failing_test_cases)
 
-        fig = plt.figure()
-        ax = fig.add_subplot(1, 1, 1)
-        ax.plot(self.dm, self.d)
-        fig.canvas.draw()
+    plotters = [Axes.scatter, Axes.bar,
+                pytest.param(Axes.plot, marks=pytest.mark.xfail)]
 
-        np.testing.assert_array_equal(ax.get_xticks(), self.dmticks)
-        self.assertListEqual(lt(ax.get_xticklabels()),
-                             self.dmlabels)
-        self.assertListEqual(ax.xaxis.unit_data, self.dmunit_data)
+    @pytest.mark.parametrize("plotter", plotters)
+    @pytest.mark.parametrize("xdata", fvalues, ids=fids)
+    def test_mixed_type_exception(self, ax, plotter, xdata):
+        with pytest.raises(TypeError):
+            plotter(ax, xdata, [1, 2])
 
-        np.testing.assert_array_equal(ax.get_yticks(), self.dticks)
-        self.assertListEqual(lt(ax.get_yticklabels()),
-                             self.dlabels)
-        self.assertListEqual(ax.yaxis.unit_data, self.dunit_data)
+    @pytest.mark.parametrize("plotter", plotters)
+    @pytest.mark.parametrize("xdata", fvalues, ids=fids)
+    def test_mixed_type_update_exception(self, ax, plotter, xdata):
+        with pytest.raises(TypeError):
+            plotter(ax, [0, 3], [1, 3])
+            plotter(ax, xdata, [1, 2])
 
-    @cleanup
-    def test_scatter_2d(self):
 
-        fig = plt.figure()
-        ax = fig.add_subplot(1, 1, 1)
-        ax.scatter(self.dm, self.d)
-        fig.canvas.draw()
+@pytest.mark.style('default')
+@check_figures_equal(extensions=["png"])
+def test_overriding_units_in_plot(fig_test, fig_ref):
+    from datetime import datetime
 
-        np.testing.assert_array_equal(ax.get_xticks(), self.dmticks)
-        self.assertListEqual(lt(ax.get_xticklabels()),
-                             self.dmlabels)
-        self.assertListEqual(ax.xaxis.unit_data, self.dmunit_data)
+    t0 = datetime(2018, 3, 1)
+    t1 = datetime(2018, 3, 2)
+    t2 = datetime(2018, 3, 3)
+    t3 = datetime(2018, 3, 4)
 
-        np.testing.assert_array_equal(ax.get_yticks(), self.dticks)
-        self.assertListEqual(lt(ax.get_yticklabels()),
-                             self.dlabels)
-        self.assertListEqual(ax.yaxis.unit_data, self.dunit_data)
-
-    @unittest.SkipTest
-    @cleanup
-    def test_plot_update(self):
-        fig = plt.figure()
-        ax = fig.add_subplot(1, 1, 1)
-
-        ax.plot(['a', 'b'])
-        ax.plot(['a', 'b', 'd'])
-        ax.plot(['b', 'c', 'd'])
-        fig.canvas.draw()
-
-        labels_new = ['a', 'b', 'd', 'c']
-        ticks_new = [0, 1, 2, 3]
-        self.assertListEqual(ax.yaxis.unit_data,
-                             list(zip(labels_new, ticks_new)))
-        np.testing.assert_array_equal(ax.get_yticks(), ticks_new)
-        self.assertListEqual(lt(ax.get_yticklabels()), labels_new)
+    ax_test = fig_test.subplots()
+    ax_ref = fig_ref.subplots()
+    for ax, kwargs in zip([ax_test, ax_ref],
+                          ({}, dict(xunits=None, yunits=None))):
+        # First call works
+        ax.plot([t0, t1], ["V1", "V2"], **kwargs)
+        x_units = ax.xaxis.units
+        y_units = ax.yaxis.units
+        # this should not raise
+        ax.plot([t2, t3], ["V1", "V2"], **kwargs)
+        # assert that we have not re-set the units attribute at all
+        assert x_units is ax.xaxis.units
+        assert y_units is ax.yaxis.units

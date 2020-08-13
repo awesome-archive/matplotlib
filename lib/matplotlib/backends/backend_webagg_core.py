@@ -10,44 +10,22 @@ Displays Agg images in the browser, with interactivity
 # - `backend_webagg.py` contains a concrete implementation of a basic
 #   application, implemented with tornado.
 
-from __future__ import (absolute_import, division, print_function,
-                        unicode_literals)
-
-import six
-
-import io
-import json
-import os
 import datetime
-import warnings
+from io import BytesIO, StringIO
+import json
+import logging
+import os
+from pathlib import Path
 
 import numpy as np
+from PIL import Image
 import tornado
-import datetime
 
+from matplotlib import backend_bases, cbook
 from matplotlib.backends import backend_agg
-from matplotlib.figure import Figure
-from matplotlib import backend_bases
-from matplotlib import _png
+from matplotlib.backend_bases import _Backend
 
-
-def new_figure_manager(num, *args, **kwargs):
-    """
-    Create a new figure manager instance
-    """
-    FigureClass = kwargs.pop('FigureClass', Figure)
-    thisFig = FigureClass(*args, **kwargs)
-    return new_figure_manager_given_figure(num, thisFig)
-
-
-def new_figure_manager_given_figure(num, figure):
-    """
-    Create a new figure manager instance for the given figure.
-    """
-    canvas = FigureCanvasWebAggCore(figure)
-    manager = FigureManagerWebAgg(canvas, num)
-    return manager
-
+_log = logging.getLogger(__name__)
 
 # http://www.cambiaresearch.com/articles/15/javascript-char-codes-key-codes
 _SHIFT_LUT = {59: ':',
@@ -113,21 +91,21 @@ def _handle_key(key):
     code = int(key[key.index('k') + 1:])
     value = chr(code)
     # letter keys
-    if code >= 65 and code <= 90:
+    if 65 <= code <= 90:
         if 'shift+' in key:
             key = key.replace('shift+', '')
         else:
             value = value.lower()
     # number keys
-    elif code >= 48 and code <= 57:
+    elif 48 <= code <= 57:
         if 'shift+' in key:
             value = ')!@#$%^&*('[int(value)]
             key = key.replace('shift+', '')
     # function keys
-    elif code >= 112 and code <= 123:
+    elif 112 <= code <= 123:
         value = 'f%s' % (code - 111)
     # number pad keys
-    elif code >= 96 and code <= 105:
+    elif 96 <= code <= 105:
         value = '%s' % (code - 96)
     # keys with shift alternatives
     elif code in _SHIFT_LUT and 'shift+' in key:
@@ -143,7 +121,7 @@ class FigureCanvasWebAggCore(backend_agg.FigureCanvasAgg):
     supports_blit = False
 
     def __init__(self, *args, **kwargs):
-        backend_agg.FigureCanvasAgg.__init__(self, *args, **kwargs)
+        super().__init__(*args, **kwargs)
 
         # Set to True when the renderer contains data that is newer
         # than the PNG buffer.
@@ -169,17 +147,11 @@ class FigureCanvasWebAggCore(backend_agg.FigureCanvasAgg):
         show()
 
     def draw(self):
-        renderer = self.get_renderer(cleared=True)
-
         self._png_is_old = True
-
-        backend_agg.RendererAgg.lock.acquire()
         try:
-            self.figure.draw(renderer)
+            super().draw()
         finally:
-            backend_agg.RendererAgg.lock.release()
-            # Swap the frames
-            self.manager.refresh_all()
+            self.manager.refresh_all()  # Swap the frames.
 
     def draw_idle(self):
         self.send_event("draw")
@@ -192,10 +164,8 @@ class FigureCanvasWebAggCore(backend_agg.FigureCanvasAgg):
         Note: diff images may not contain transparency, therefore upon
         draw this mode may be changed if the resulting image has any
         transparent component.
-
         """
-        if mode not in ['full', 'diff']:
-            raise ValueError('image mode must be either full or diff.')
+        cbook._check_in_list(['full', 'diff'], mode=mode)
         if self._current_image_mode != mode:
             self._current_image_mode = mode
             self.handle_send_image_mode(None)
@@ -207,8 +177,8 @@ class FigureCanvasWebAggCore(backend_agg.FigureCanvasAgg):
             # The buffer is created as type uint32 so that entire
             # pixels can be compared in one numpy call, rather than
             # needing to compare each plane separately.
-            buff = np.frombuffer(renderer.buffer_rgba(), dtype=np.uint32)
-            buff.shape = (renderer.height, renderer.width)
+            buff = (np.frombuffer(renderer.buffer_rgba(), dtype=np.uint32)
+                    .reshape((renderer.height, renderer.width)))
 
             # If any pixels have transparency, we need to force a full
             # draw as we cannot overlay new on top of old.
@@ -219,33 +189,26 @@ class FigureCanvasWebAggCore(backend_agg.FigureCanvasAgg):
                 output = buff
             else:
                 self.set_image_mode('diff')
-                last_buffer = np.frombuffer(self._last_renderer.buffer_rgba(),
-                                            dtype=np.uint32)
-                last_buffer.shape = (renderer.height, renderer.width)
-
+                last_buffer = (np.frombuffer(self._last_renderer.buffer_rgba(),
+                                             dtype=np.uint32)
+                               .reshape((renderer.height, renderer.width)))
                 diff = buff != last_buffer
                 output = np.where(diff, buff, 0)
 
-            # TODO: We should write a new version of write_png that
-            # handles the differencing inline
-            buff = _png.write_png(
-                output.view(dtype=np.uint8).reshape(output.shape + (4,)),
-                None, compression=6, filter=_png.PNG_FILTER_NONE)
-
+            buf = BytesIO()
+            data = output.view(dtype=np.uint8).reshape((*output.shape, 4))
+            Image.fromarray(data).save(buf, format="png")
             # Swap the renderer frames
             self._renderer, self._last_renderer = (
                 self._last_renderer, renderer)
             self._force_full = False
             self._png_is_old = False
-
-        return buff
+            return buf.getvalue()
 
     def get_renderer(self, cleared=None):
-        # Mirrors super.get_renderer, but caches the old one
-        # so that we can do things such as produce a diff image
-        # in get_diff_image
-        _, _, w, h = self.figure.bbox.bounds
-        w, h = int(w), int(h)
+        # Mirrors super.get_renderer, but caches the old one so that we can do
+        # things such as produce a diff image in get_diff_image.
+        w, h = self.figure.bbox.size.astype(int)
         key = w, h, self.figure.dpi
         try:
             self._lastKey, self._renderer
@@ -273,8 +236,8 @@ class FigureCanvasWebAggCore(backend_agg.FigureCanvasAgg):
         return handler(event)
 
     def handle_unknown_event(self, event):
-        warnings.warn('Unhandled message type {0}. {1}'.format(
-            event['type'], event))
+        _log.warning('Unhandled message type {0}. {1}'.format(
+                     event['type'], event))
 
     def handle_ack(self, event):
         # Network latency tends to decrease if traffic is flowing
@@ -296,14 +259,6 @@ class FigureCanvasWebAggCore(backend_agg.FigureCanvasAgg):
         # Javascript button numbers and matplotlib button numbers are
         # off by 1
         button = event['button'] + 1
-
-        # The right mouse button pops up a context menu, which
-        # doesn't work very well, so use the middle mouse button
-        # instead.  It doesn't seem that it's possible to disable
-        # the context menu in recent versions of Chrome.  If this
-        # is resolved, please also adjust the docstring in MouseEvent.
-        if button == 2:
-            button = 3
 
         e_type = event['type']
         guiEvent = event.get('guiEvent', None)
@@ -343,6 +298,10 @@ class FigureCanvasWebAggCore(backend_agg.FigureCanvasAgg):
             figure_label = "Figure {0}".format(self.manager.num)
         self.send_event('figure_label', label=figure_label)
         self._force_full = True
+        if self.toolbar:
+            # Normal toolbar init would refresh this, but it happens before the
+            # browser canvas is set up.
+            self.toolbar.set_history_buttons()
         self.draw_idle()
 
     def handle_resize(self, event):
@@ -351,13 +310,11 @@ class FigureCanvasWebAggCore(backend_agg.FigureCanvasAgg):
         fig = self.figure
         # An attempt at approximating the figure size in pixels.
         fig.set_size_inches(x / fig.dpi, y / fig.dpi, forward=False)
-
-        _, _, w, h = self.figure.bbox.bounds
         # Acknowledge the resize, and force the viewer to update the
         # canvas size to the figure's new size (which is hopefully
         # identical or within a pixel or so).
         self._png_is_old = True
-        self.manager.resize(w, h)
+        self.manager.resize(*fig.bbox.size, forward=False)
         self.resize_event()
 
     def handle_send_image_mode(self, event):
@@ -376,44 +333,36 @@ class FigureCanvasWebAggCore(backend_agg.FigureCanvasAgg):
             self.draw_idle()
 
     def send_event(self, event_type, **kwargs):
-        self.manager._send_event(event_type, **kwargs)
-
-    def start_event_loop(self, timeout):
-        backend_bases.FigureCanvasBase.start_event_loop_default(
-            self, timeout)
-    start_event_loop.__doc__ = \
-        backend_bases.FigureCanvasBase.start_event_loop_default.__doc__
-
-    def stop_event_loop(self):
-        backend_bases.FigureCanvasBase.stop_event_loop_default(self)
-    stop_event_loop.__doc__ = \
-        backend_bases.FigureCanvasBase.stop_event_loop_default.__doc__
+        if self.manager:
+            self.manager._send_event(event_type, **kwargs)
 
 
-_JQUERY_ICON_CLASSES = {
-    'home': 'ui-icon ui-icon-home',
-    'back': 'ui-icon ui-icon-circle-arrow-w',
-    'forward': 'ui-icon ui-icon-circle-arrow-e',
-    'zoom_to_rect': 'ui-icon ui-icon-search',
-    'move': 'ui-icon ui-icon-arrow-4',
-    'download': 'ui-icon ui-icon-disk',
-    None: None,
+_ALLOWED_TOOL_ITEMS = {
+    'home',
+    'back',
+    'forward',
+    'pan',
+    'zoom',
+    'download',
+    None,
 }
 
 
 class NavigationToolbar2WebAgg(backend_bases.NavigationToolbar2):
 
     # Use the standard toolbar items + download button
-    toolitems = [(text, tooltip_text, _JQUERY_ICON_CLASSES[image_file],
-                  name_of_method)
-                 for text, tooltip_text, image_file, name_of_method
-                 in (backend_bases.NavigationToolbar2.toolitems +
-                     (('Download', 'Download plot', 'download', 'download'),))
-                 if image_file in _JQUERY_ICON_CLASSES]
+    toolitems = [
+        (text, tooltip_text, image_file, name_of_method)
+        for text, tooltip_text, image_file, name_of_method
+        in (*backend_bases.NavigationToolbar2.toolitems,
+            ('Download', 'Download plot', 'filesave', 'download'))
+        if name_of_method in _ALLOWED_TOOL_ITEMS
+    ]
 
-    def _init_toolbar(self):
+    def __init__(self, canvas):
         self.message = ''
         self.cursor = 0
+        super().__init__(canvas)
 
     def set_message(self, message):
         if message != self.message:
@@ -425,15 +374,12 @@ class NavigationToolbar2WebAgg(backend_bases.NavigationToolbar2):
             self.canvas.send_event("cursor", cursor=cursor)
         self.cursor = cursor
 
-    def dynamic_update(self):
-        self.canvas.draw_idle()
-
     def draw_rubberband(self, event, x0, y0, x1, y1):
         self.canvas.send_event(
             "rubberband", x0=x0, y0=y0, x1=x1, y1=y1)
 
     def release_zoom(self, event):
-        backend_bases.NavigationToolbar2.release_zoom(self, event)
+        super().release_zoom(event)
         self.canvas.send_event(
             "rubberband", x0=-1, y0=-1, x1=-1, y1=-1)
 
@@ -441,12 +387,26 @@ class NavigationToolbar2WebAgg(backend_bases.NavigationToolbar2):
         """Save the current figure"""
         self.canvas.send_event('save')
 
+    def pan(self):
+        super().pan()
+        self.canvas.send_event('navigate_mode', mode=self.mode.name)
+
+    def zoom(self):
+        super().zoom()
+        self.canvas.send_event('navigate_mode', mode=self.mode.name)
+
+    def set_history_buttons(self):
+        can_backward = self._nav_stack._pos > 0
+        can_forward = self._nav_stack._pos < len(self._nav_stack._elements) - 1
+        self.canvas.send_event('history_buttons',
+                               Back=can_backward, Forward=can_forward)
+
 
 class FigureManagerWebAgg(backend_bases.FigureManagerBase):
     ToolbarCls = NavigationToolbar2WebAgg
 
     def __init__(self, canvas, num):
-        backend_bases.FigureManagerBase.__init__(self, canvas, num)
+        super().__init__(canvas, num)
 
         self.web_sockets = set()
 
@@ -459,10 +419,11 @@ class FigureManagerWebAgg(backend_bases.FigureManagerBase):
         toolbar = self.ToolbarCls(canvas)
         return toolbar
 
-    def resize(self, w, h):
+    def resize(self, w, h, forward=True):
         self._send_event(
             'resize',
-            size=(w / self.canvas._dpi_ratio, h / self.canvas._dpi_ratio))
+            size=(w / self.canvas._dpi_ratio, h / self.canvas._dpi_ratio),
+            forward=forward)
 
     def set_window_title(self, title):
         self._send_event('figure_label', label=title)
@@ -472,11 +433,8 @@ class FigureManagerWebAgg(backend_bases.FigureManagerBase):
     def add_web_socket(self, web_socket):
         assert hasattr(web_socket, 'send_binary')
         assert hasattr(web_socket, 'send_json')
-
         self.web_sockets.add(web_socket)
-
-        _, _, w, h = self.canvas.figure.bbox.bounds
-        self.resize(w, h)
+        self.resize(*self.canvas.figure.bbox.size)
         self._send_event('refresh')
 
     def remove_web_socket(self, web_socket):
@@ -488,22 +446,19 @@ class FigureManagerWebAgg(backend_bases.FigureManagerBase):
     def refresh_all(self):
         if self.web_sockets:
             diff = self.canvas.get_diff_image()
-            for s in self.web_sockets:
-                s.send_binary(diff)
+            if diff is not None:
+                for s in self.web_sockets:
+                    s.send_binary(diff)
 
     @classmethod
     def get_javascript(cls, stream=None):
         if stream is None:
-            output = io.StringIO()
+            output = StringIO()
         else:
             output = stream
 
-        with io.open(os.path.join(
-                os.path.dirname(__file__),
-                "web_backend",
-                "js",
-                "mpl.js"), encoding='utf8') as fd:
-            output.write(fd.read())
+        output.write((Path(__file__).parent / "web_backend/js/mpl.js")
+                     .read_text(encoding="utf-8"))
 
         toolitems = []
         for name, tooltip, image, method in cls.ToolbarCls.toolitems:
@@ -518,7 +473,7 @@ class FigureManagerWebAgg(backend_bases.FigureManagerBase):
         for filetype, ext in sorted(FigureCanvasWebAggCore.
                                     get_supported_filetypes_grouped().
                                     items()):
-            if not ext[0] == 'pgf':  # pgf does not support BytesIO
+            if ext[0] != 'pgf':  # pgf does not support BytesIO
                 extensions.append(ext[0])
         output.write("mpl.extensions = {0};\n\n".format(
             json.dumps(extensions)))
@@ -534,13 +489,16 @@ class FigureManagerWebAgg(backend_bases.FigureManagerBase):
         return os.path.join(os.path.dirname(__file__), 'web_backend')
 
     def _send_event(self, event_type, **kwargs):
-        payload = {'type': event_type}
-        payload.update(kwargs)
+        payload = {'type': event_type, **kwargs}
         for s in self.web_sockets:
             s.send_json(payload)
 
 
 class TimerTornado(backend_bases.TimerBase):
+    def __init__(self, *args, **kwargs):
+        self._timer = None
+        super().__init__(*args, **kwargs)
+
     def _timer_start(self):
         self._timer_stop()
         if self._single:
@@ -562,7 +520,6 @@ class TimerTornado(backend_bases.TimerBase):
             ioloop.remove_timeout(self._timer)
         else:
             self._timer.stop()
-
         self._timer = None
 
     def _timer_set_interval(self):
@@ -570,3 +527,9 @@ class TimerTornado(backend_bases.TimerBase):
         if self._timer is not None:
             self._timer_stop()
             self._timer_start()
+
+
+@_Backend.export
+class _BackendWebAggCoreAgg(_Backend):
+    FigureCanvas = FigureCanvasWebAggCore
+    FigureManager = FigureManagerWebAgg

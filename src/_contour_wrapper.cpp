@@ -1,12 +1,13 @@
-#include "src/_contour.h"
-#include "src/mplutils.h"
-#include "src/py_exceptions.h"
+#include "_contour.h"
+#include "mplutils.h"
+#include "py_converters.h"
+#include "py_exceptions.h"
 
 /* QuadContourGenerator */
 
 typedef struct
 {
-    PyObject_HEAD;
+    PyObject_HEAD
     QuadContourGenerator* ptr;
 } PyQuadContourGenerator;
 
@@ -22,22 +23,22 @@ static PyObject* PyQuadContourGenerator_new(PyTypeObject* type, PyObject* args, 
 
 const char* PyQuadContourGenerator_init__doc__ =
     "QuadContourGenerator(x, y, z, mask, corner_mask, chunk_size)\n"
-    "\n"
+    "--\n\n"
     "Create a new C++ QuadContourGenerator object\n";
 
 static int PyQuadContourGenerator_init(PyQuadContourGenerator* self, PyObject* args, PyObject* kwds)
 {
     QuadContourGenerator::CoordinateArray x, y, z;
     QuadContourGenerator::MaskArray mask;
-    int corner_mask;
+    bool corner_mask;
     long chunk_size;
 
-    if (!PyArg_ParseTuple(args, "O&O&O&O&il",
+    if (!PyArg_ParseTuple(args, "O&O&O&O&O&l",
                           &x.converter_contiguous, &x,
                           &y.converter_contiguous, &y,
                           &z.converter_contiguous, &z,
                           &mask.converter_contiguous, &mask,
-                          &corner_mask,
+                          &convert_bool, &corner_mask,
                           &chunk_size)) {
         return -1;
     }
@@ -47,12 +48,20 @@ static int PyQuadContourGenerator_init(PyQuadContourGenerator* self, PyObject* a
         y.dim(1) != x.dim(1) || z.dim(1) != x.dim(1)) {
         PyErr_SetString(PyExc_ValueError,
             "x, y and z must all be 2D arrays with the same dimensions");
+        return -1;
+    }
+
+    if (z.dim(0) < 2 || z.dim(1) < 2) {
+        PyErr_SetString(PyExc_ValueError,
+            "x, y and z must all be at least 2x2 arrays");
+        return -1;
     }
 
     // Mask array is optional, if set must be same size as other arrays.
     if (!mask.empty() && (mask.dim(0) != x.dim(0) || mask.dim(1) != x.dim(1))) {
         PyErr_SetString(PyExc_ValueError,
             "If mask is set it must be a 2D array with the same dimensions as x.");
+        return -1;
     }
 
     CALL_CPP_INIT("QuadContourGenerator",
@@ -69,7 +78,7 @@ static void PyQuadContourGenerator_dealloc(PyQuadContourGenerator* self)
 
 const char* PyQuadContourGenerator_create_contour__doc__ =
     "create_contour(level)\n"
-    "\n"
+    "--\n\n"
     "Create and return a non-filled contour.";
 
 static PyObject* PyQuadContourGenerator_create_contour(PyQuadContourGenerator* self, PyObject* args, PyObject* kwds)
@@ -86,7 +95,7 @@ static PyObject* PyQuadContourGenerator_create_contour(PyQuadContourGenerator* s
 
 const char* PyQuadContourGenerator_create_filled_contour__doc__ =
     "create_filled_contour(lower_level, upper_level)\n"
-    "\n"
+    "--\n\n"
     "Create and return a filled contour";
 
 static PyObject* PyQuadContourGenerator_create_filled_contour(PyQuadContourGenerator* self, PyObject* args, PyObject* kwds)
@@ -101,6 +110,7 @@ static PyObject* PyQuadContourGenerator_create_filled_contour(PyQuadContourGener
     {
         PyErr_SetString(PyExc_ValueError,
             "filled contour levels must be increasing");
+        return NULL;
     }
 
     PyObject* result;
@@ -142,9 +152,6 @@ static PyTypeObject* PyQuadContourGenerator_init_type(PyObject* m, PyTypeObject*
 
 /* Module */
 
-extern "C" {
-
-#if PY3K
 static struct PyModuleDef moduledef = {
     PyModuleDef_HEAD_INIT,
     "_contour",
@@ -157,38 +164,25 @@ static struct PyModuleDef moduledef = {
     NULL
 };
 
-#define INITERROR return NULL
+#pragma GCC visibility push(default)
 
 PyMODINIT_FUNC PyInit__contour(void)
-
-#else
-#define INITERROR return
-
-PyMODINIT_FUNC init_contour(void)
-#endif
-
 {
     PyObject *m;
 
-#if PY3K
     m = PyModule_Create(&moduledef);
-#else
-    m = Py_InitModule3("_contour", NULL, NULL);
-#endif
 
     if (m == NULL) {
-        INITERROR;
+        return NULL;
     }
 
     if (!PyQuadContourGenerator_init_type(m, &PyQuadContourGeneratorType)) {
-        INITERROR;
+        return NULL;
     }
 
     import_array();
 
-#if PY3K
     return m;
-#endif
 }
 
-} // extern "C"
+#pragma GCC visibility pop
